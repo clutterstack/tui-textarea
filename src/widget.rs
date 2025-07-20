@@ -92,14 +92,90 @@ fn next_scroll_top(prev_top: u16, cursor: u16, len: u16) -> u16 {
 }
 
 impl<'a> TextArea<'a> {
-    fn text_lines(&'a self, top_row: usize, height: usize) -> Vec<Line<'a>> {
+    fn text_lines(&'a self, top_row: usize, height: usize, #[allow(unused_variables)] area_width: u16) -> Vec<Line<'a>> {
         let lines_len = self.lines().len();
         let lnum_len = num_digits(lines_len);
         let bottom_row = cmp::min(top_row + height, lines_len);
-        let mut lines = Vec::with_capacity(bottom_row - top_row);
-        for (i, line) in self.lines()[top_row..bottom_row].iter().enumerate() {
-            lines.push(self.line_spans(line.as_str(), top_row + i, lnum_len));
+        let mut lines = Vec::new();
+        
+        #[cfg(feature = "wrap")]
+        let wrap_enabled = self.wrap_enabled();
+        #[cfg(not(feature = "wrap"))]
+        let wrap_enabled = false;
+        
+        if wrap_enabled {
+            #[cfg(feature = "wrap")]
+            {
+                // Calculate effective wrap width
+                let mut wrap_width = area_width as usize;
+                
+                // Account for line numbers if enabled
+                if self.line_number_style().is_some() {
+                    wrap_width = wrap_width.saturating_sub(lnum_len as usize + 2);
+                }
+                
+                // Use custom wrap width if set
+                if let Some(custom_width) = self.wrap_width() {
+                    wrap_width = custom_width;
+                }
+                
+                // Ensure minimum width
+                wrap_width = wrap_width.max(1);
+                
+                let mut display_row = 0;
+                for (logical_row, line_text) in self.lines().iter().enumerate() {
+                    if logical_row < top_row {
+                        // Skip lines before the viewport, but count wrapped lines
+                        let wrapped_count = textwrap::wrap(line_text, wrap_width).len();
+                        display_row += wrapped_count;
+                        continue;
+                    }
+                    
+                    if display_row >= top_row + height {
+                        break;
+                    }
+                    
+                    // Wrap the line
+                    let wrapped_lines = textwrap::wrap(line_text, wrap_width);
+                    
+                    for (wrap_index, wrapped_line) in wrapped_lines.iter().enumerate() {
+                        if display_row >= top_row && display_row < top_row + height {
+                            // For wrapped lines, create Line directly with owned content
+                            use crate::ratatui::text::Span;
+                            
+                            let mut spans = Vec::new();
+                            
+                            // Add line number for first wrap segment only
+                            if wrap_index == 0 && self.line_number_style().is_some() {
+                                let lnum_style = self.line_number_style().unwrap();
+                                let lnum = format!(" {:>width$} ", logical_row + 1, width = lnum_len as usize);
+                                spans.push(Span::styled(lnum, lnum_style));
+                            } else if self.line_number_style().is_some() {
+                                // Add padding for wrapped line segments
+                                let padding = " ".repeat(lnum_len as usize + 2);
+                                spans.push(Span::raw(padding));
+                            }
+                            
+                            // Add the wrapped line content
+                            spans.push(Span::styled(wrapped_line.to_string(), self.style()));
+                            
+                            lines.push(Line::from(spans));
+                        }
+                        display_row += 1;
+                        
+                        if display_row >= top_row + height {
+                            break;
+                        }
+                    }
+                }
+            }
+        } else {
+            // Original non-wrapping logic
+            for (i, line) in self.lines()[top_row..bottom_row].iter().enumerate() {
+                lines.push(self.line_spans(line.as_str(), top_row + i, lnum_len));
+            }
         }
+        
         lines
     }
 
@@ -160,7 +236,7 @@ impl Widget for &TextArea<'_> {
         let lines = if !self.placeholder.is_empty() && self.is_empty() {
             self.placeholder_lines()
         } else {
-            self.text_lines(top_row as _, height as _)
+            self.text_lines(top_row as _, height as _, width)
         };
 
         // To get fine control over the text color and the surrrounding block they have to be rendered separately

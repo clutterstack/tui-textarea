@@ -125,6 +125,10 @@ pub struct TextArea<'a> {
     mask: Option<char>,
     selection_start: Option<(usize, usize)>,
     select_style: Style,
+    #[cfg(feature = "wrap")]
+    wrap_enabled: bool,
+    #[cfg(feature = "wrap")]
+    wrap_width: Option<usize>,
 }
 
 /// Convert any iterator whose elements can be converted into [`String`] into [`TextArea`]. Each [`String`] element is
@@ -230,6 +234,10 @@ impl<'a> TextArea<'a> {
             mask: None,
             selection_start: None,
             select_style: Style::default().bg(Color::LightBlue),
+            #[cfg(feature = "wrap")]
+            wrap_enabled: false,
+            #[cfg(feature = "wrap")]
+            wrap_width: None,
         }
     }
 
@@ -2113,6 +2121,61 @@ impl<'a> TextArea<'a> {
     /// ```
     pub fn alignment(&self) -> Alignment {
         self.alignment
+    }
+
+    /// Enable or disable text wrapping. When enabled, long lines will be wrapped to fit within the
+    /// specified width. Wrapping is disabled by default.
+    /// ```
+    /// use tui_textarea::TextArea;
+    ///
+    /// let mut textarea = TextArea::default();
+    /// textarea.set_wrap(true);
+    /// ```
+    #[cfg(feature = "wrap")]
+    pub fn set_wrap(&mut self, enabled: bool) {
+        self.wrap_enabled = enabled;
+    }
+
+    /// Check if text wrapping is enabled.
+    /// ```
+    /// use tui_textarea::TextArea;
+    ///
+    /// let mut textarea = TextArea::default();
+    /// assert!(!textarea.wrap_enabled());
+    /// textarea.set_wrap(true);
+    /// assert!(textarea.wrap_enabled());
+    /// ```
+    #[cfg(feature = "wrap")]
+    pub fn wrap_enabled(&self) -> bool {
+        self.wrap_enabled
+    }
+
+    /// Set the wrap width. If `None`, wrapping will use the available text area width.
+    /// If `Some(width)`, lines will be wrapped at the specified character width.
+    /// ```
+    /// use tui_textarea::TextArea;
+    ///
+    /// let mut textarea = TextArea::default();
+    /// textarea.set_wrap(true);
+    /// textarea.set_wrap_width(Some(80)); // Wrap at 80 characters
+    /// ```
+    #[cfg(feature = "wrap")]
+    pub fn set_wrap_width(&mut self, width: Option<usize>) {
+        self.wrap_width = width;
+    }
+
+    /// Get the current wrap width setting.
+    /// ```
+    /// use tui_textarea::TextArea;
+    ///
+    /// let mut textarea = TextArea::default();
+    /// assert_eq!(textarea.wrap_width(), None);
+    /// textarea.set_wrap_width(Some(80));
+    /// assert_eq!(textarea.wrap_width(), Some(80));
+    /// ```
+    #[cfg(feature = "wrap")]
+    pub fn wrap_width(&self) -> Option<usize> {
+        self.wrap_width
     }
 
     /// Check if the textarea has a empty content.

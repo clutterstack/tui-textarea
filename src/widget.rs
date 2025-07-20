@@ -64,7 +64,7 @@ impl Viewport {
         self.0.store(u, Ordering::Relaxed);
     }
 
-    pub fn scroll(&mut self, rows: i16, cols: i16) {
+    pub fn scroll(&mut self, rows: i16, _cols: i16) {
         fn apply_scroll(pos: u16, delta: i16) -> u16 {
             if delta >= 0 {
                 pos.saturating_add(delta as u16)
@@ -75,7 +75,7 @@ impl Viewport {
 
         let u = self.0.get_mut();
         let row = apply_scroll((*u >> 16) as u16, rows);
-        let col = apply_scroll(*u as u16, cols);
+        let col = 0; // No horizontal scrolling
         *u = (*u & 0xffff_ffff_0000_0000) | ((row as u64) << 16) | (col as u64);
     }
 }
@@ -113,19 +113,6 @@ impl<'a> TextArea<'a> {
         next_scroll_top(prev_top, self.cursor().0 as u16, height)
     }
 
-    fn scroll_top_col(&self, prev_top: u16, width: u16) -> u16 {
-        let mut cursor = self.cursor().1 as u16;
-        // Adjust the cursor position due to the width of line number.
-        if self.line_number_style().is_some() {
-            let lnum = num_digits(self.lines().len()) as u16 + 2; // `+ 2` for margins
-            if cursor <= lnum {
-                cursor *= 2; // Smoothly slide the line number into the screen on scrolling left
-            } else {
-                cursor += lnum; // The cursor position is shifted by the line number part
-            };
-        }
-        next_scroll_top(prev_top, cursor, width)
-    }
 }
 
 impl Widget for &TextArea<'_> {
@@ -136,9 +123,8 @@ impl Widget for &TextArea<'_> {
             area
         };
 
-        let (top_row, top_col) = self.viewport.scroll_top();
+        let (top_row, _) = self.viewport.scroll_top();
         let top_row = self.scroll_top_row(top_row, height);
-        let top_col = self.scroll_top_col(top_col, width);
 
         let (text, style) = if !self.placeholder.is_empty() && self.is_empty() {
             (self.placeholder_widget(), self.placeholder_style)
@@ -149,7 +135,7 @@ impl Widget for &TextArea<'_> {
         // To get fine control over the text color and the surrrounding block they have to be rendered separately
         // see https://github.com/ratatui/ratatui/issues/144
         let mut text_area = area;
-        let mut inner = Paragraph::new(text)
+        let inner = Paragraph::new(text)
             .style(style)
             .alignment(self.alignment());
         if let Some(b) = self.block() {
@@ -160,12 +146,9 @@ impl Widget for &TextArea<'_> {
             let b = b.clone();
             b.render(area, buf)
         }
-        if top_col != 0 {
-            inner = inner.scroll((0, top_col));
-        }
 
         // Store scroll top position for rendering on the next tick
-        self.viewport.store(top_row, top_col, width, height);
+        self.viewport.store(top_row, 0, width, height);
 
         inner.render(text_area, buf);
     }

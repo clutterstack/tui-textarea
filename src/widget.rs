@@ -1,6 +1,6 @@
 use crate::ratatui::buffer::Buffer;
 use crate::ratatui::layout::Rect;
-use crate::ratatui::text::{Span, Text};
+use crate::ratatui::text::Span;
 use crate::ratatui::widgets::Widget;
 use crate::textarea::TextArea;
 use crate::util::num_digits;
@@ -92,17 +92,6 @@ fn next_scroll_top(prev_top: u16, cursor: u16, len: u16) -> u16 {
 }
 
 impl<'a> TextArea<'a> {
-    fn text_widget(&'a self, top_row: usize, height: usize) -> Text<'a> {
-        let lines_len = self.lines().len();
-        let lnum_len = num_digits(lines_len);
-        let bottom_row = cmp::min(top_row + height, lines_len);
-        let mut lines = Vec::with_capacity(bottom_row - top_row);
-        for (i, line) in self.lines()[top_row..bottom_row].iter().enumerate() {
-            lines.push(self.line_spans(line.as_str(), top_row + i, lnum_len));
-        }
-        Text::from(lines)
-    }
-
     fn text_lines(&'a self, top_row: usize, height: usize) -> Vec<Line<'a>> {
         let lines_len = self.lines().len();
         let lnum_len = num_digits(lines_len);
@@ -112,12 +101,6 @@ impl<'a> TextArea<'a> {
             lines.push(self.line_spans(line.as_str(), top_row + i, lnum_len));
         }
         lines
-    }
-
-    fn placeholder_widget(&'a self) -> Text<'a> {
-        let cursor = Span::styled(" ", self.cursor_style);
-        let text = Span::raw(self.placeholder.as_str());
-        Text::from(Line::from(vec![cursor, text]))
     }
 
     fn placeholder_lines(&'a self) -> Vec<Line<'a>> {

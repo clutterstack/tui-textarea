@@ -12,6 +12,7 @@ Multi-line text editor can be easily put as part of your TUI application.
 
 - Multi-line text editor widget with basic operations (insert/delete characters, auto scrolling, ...)
 - **Text wrapping** support with configurable wrap width
+- **Mouse support** for cursor positioning with click-to-position functionality
 - Emacs-like shortcuts (`C-n`/`C-p`/`C-f`/`C-b`, `M-f`/`M-b`, `C-a`/`C-e`, `C-h`/`C-d`, `C-k`, `M-<`/`M->`, ...)
 - Undo/Redo
 - Line number
@@ -118,6 +119,16 @@ Text wrapping demonstration. Toggle wrapping on/off with Ctrl+W.
 
 *Note: This example requires the `wrap` feature to be enabled.*
 
+### [`mouse_demo`](./examples/mouse_demo.rs)
+
+```sh
+cargo run --example mouse_demo --features mouse
+```
+
+Mouse click demonstration. Click anywhere in the text area to position the cursor at that location. Automatically handles borders and text wrapping.
+
+*Note: This example requires the `mouse` feature to be enabled.*
+
 ### [`termion`](./examples/termion.rs)
 
 ```sh
@@ -176,12 +187,20 @@ ratatui = "*"
 tui-textarea = { version = "*", features = ["wrap"] }
 ```
 
+If you want mouse click support for cursor positioning, enable the `mouse` feature.
+
+```toml
+[dependencies]
+ratatui = "*"
+tui-textarea = { version = "*", features = ["mouse"] }
+```
+
 You can enable multiple features at once:
 
 ```toml
 [dependencies]
 ratatui = "*"
-tui-textarea = { version = "*", features = ["search", "wrap"] }
+tui-textarea = { version = "*", features = ["search", "wrap", "mouse"] }
 ```
 
 If you're using ratatui with [termion][] or [termwiz][], enable the `termion` or `termwiz` feature instead of
@@ -500,6 +519,60 @@ When text wrapping is enabled:
 **Note:** Text wrapping is incompatible with horizontal scrolling. When wrapping is enabled, the editor focuses on
 vertical navigation only.
 
+### Mouse Support
+
+`TextArea` supports mouse click events for cursor positioning. When enabled, you can click anywhere in the text area to position the cursor at that location. This feature automatically handles borders, padding, and text wrapping.
+
+To enable mouse support, you need to enable the `mouse` feature in your `Cargo.toml`:
+
+```toml
+tui-textarea = { version = "*", features = ["mouse"] }
+```
+
+Then handle mouse events in your application:
+
+```rust,ignore
+use crossterm::event::{Event, MouseEventKind, EnableMouseCapture, DisableMouseCapture};
+use crossterm::execute;
+
+// Enable mouse capture
+execute!(io::stdout(), EnableMouseCapture)?;
+
+let mut textarea = TextArea::default();
+
+// In your event loop
+match event::read()? {
+    Event::Mouse(mouse) => {
+        match mouse.kind {
+            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                // Pass the full widget area (including borders)
+                let widget_area = /* your widget area */;
+                if textarea.handle_mouse_click(mouse.column, mouse.row, widget_area) {
+                    // Cursor was successfully positioned
+                }
+            }
+            _ => {
+                // Handle other mouse events (scrolling, etc.)
+                textarea.input(mouse);
+            }
+        }
+    }
+    // ... handle other events
+}
+
+// Disable mouse capture when done
+execute!(io::stdout(), DisableMouseCapture)?;
+```
+
+When mouse support is enabled:
+- Click anywhere in the text content to position the cursor
+- Automatically accounts for widget borders and padding
+- Works correctly with text wrapping when both features are enabled
+- Falls back gracefully if clicks are outside the text area
+- Existing mouse scrolling functionality is preserved
+
+**Note:** You must enable mouse capture in your terminal backend (e.g., `EnableMouseCapture` for crossterm) for mouse events to be received.
+
 ## Breaking Changes
 
 ### Horizontal Scrolling Removal
@@ -608,6 +681,7 @@ notify how to move the cursor.
 | `textarea.set_wrap_width(Some(80))`                  | Set custom wrap width (requires `wrap` feature) |
 | `textarea.wrap_enabled()`                            | Check if wrapping is enabled                     |
 | `textarea.wrap_width()`                              | Get current wrap width setting                   |
+| `textarea.handle_mouse_click(x, y, area)`            | Handle mouse click at screen coordinates (requires `mouse` feature) |
 
 To define your own key mappings, simply call the above methods in your code instead of `TextArea::input()` method.
 

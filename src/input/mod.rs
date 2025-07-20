@@ -58,6 +58,9 @@ pub enum Key {
     MouseScrollDown,
     /// Virtual key to scroll up by mouse
     MouseScrollUp,
+    /// Mouse click at position (column, row). This key is supported when `mouse` feature is enabled
+    #[cfg(feature = "mouse")]
+    MouseClick(u16, u16),
     /// An invalid key input (this key is always ignored by [`TextArea`](crate::TextArea))
     Null,
 }

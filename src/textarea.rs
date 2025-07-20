@@ -663,6 +663,15 @@ impl<'a> TextArea<'a> {
                 self.scroll_with_shift((-1, 0).into(), shift);
                 false
             }
+            #[cfg(feature = "mouse")]
+            Input {
+                key: Key::MouseClick(_, _),
+                ..
+            } => {
+                // Mouse clicks are handled through handle_mouse_click() method
+                // which requires text area information not available here
+                false
+            }
             _ => false,
         };
 
@@ -742,6 +751,15 @@ impl<'a> TextArea<'a> {
                 ..
             } => {
                 self.scroll((-1, 0));
+                false
+            }
+            #[cfg(feature = "mouse")]
+            Input {
+                key: Key::MouseClick(_, _),
+                ..
+            } => {
+                // Mouse clicks are handled through handle_mouse_click() method
+                // which requires text area information not available here
                 false
             }
             _ => false,
@@ -2178,6 +2196,220 @@ impl<'a> TextArea<'a> {
         self.wrap_width
     }
 
+    /// Handle a mouse click at the given screen coordinates within the widget area.
+    /// Returns `true` if the click was handled and the cursor was moved.
+    /// 
+    /// The coordinates should be relative to the terminal screen. This method automatically
+    /// accounts for borders and padding by calculating the inner text area if the TextArea
+    /// has a block configured.
+    /// 
+    /// ```
+    /// use tui_textarea::TextArea;
+    /// use ratatui::widgets::{Block, Borders};
+    /// use ratatui::layout::Rect;
+    ///
+    /// let mut textarea = TextArea::default();
+    /// textarea.set_block(Block::default().borders(Borders::ALL));
+    /// textarea.insert_str("Hello\nWorld");
+    /// 
+    /// // Simulate a click at screen position (5, 1) within widget area at (0, 0, 10, 5)
+    /// // The method automatically accounts for the block borders
+    /// let widget_area = Rect::new(0, 0, 10, 5);
+    /// let handled = textarea.handle_mouse_click(5, 1, widget_area);
+    /// // handled will be true if the click was within the text content
+    /// ```
+    #[cfg(feature = "mouse")]
+    pub fn handle_mouse_click(&mut self, screen_x: u16, screen_y: u16, widget_area: crate::ratatui::layout::Rect) -> bool {
+        // Calculate the actual text area, accounting for block borders if present
+        let text_area = if let Some(block) = self.block() {
+            block.inner(widget_area)
+        } else {
+            widget_area
+        };
+        
+        // Convert screen coordinates to text area relative coordinates
+        let rel_x = screen_x.saturating_sub(text_area.x);
+        let rel_y = screen_y.saturating_sub(text_area.y);
+        
+        // Check if click is within the text area bounds
+        if rel_x >= text_area.width || rel_y >= text_area.height {
+            return false;
+        }
+        
+        if let Some((row, col)) = self.screen_to_logical_position(rel_x, rel_y, text_area.width) {
+            self.move_cursor(crate::cursor::CursorMove::Jump(row as u16, col as u16));
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Convert screen coordinates (relative to text area) to logical text position.
+    /// Returns `Some((row, col))` if the coordinates map to valid text content.
+    #[cfg(feature = "mouse")]
+    fn screen_to_logical_position(&self, rel_x: u16, rel_y: u16, area_width: u16) -> Option<(usize, usize)> {
+        // Get the current viewport information
+        let (top_row, _) = self.viewport.scroll_top();
+        let display_line_index = rel_y as usize;
+        
+        // Check if wrapping is enabled and handle accordingly
+        #[cfg(feature = "wrap")]
+        let wrap_enabled = self.wrap_enabled();
+        #[cfg(not(feature = "wrap"))]
+        let wrap_enabled = false;
+        
+        if wrap_enabled {
+            #[cfg(feature = "wrap")]
+            {
+                return self.screen_to_logical_position_wrapped(rel_x, display_line_index, area_width, top_row as usize);
+            }
+            #[cfg(not(feature = "wrap"))]
+            {
+                return None;
+            }
+        } else {
+            return self.screen_to_logical_position_unwrapped(rel_x, display_line_index, top_row as usize);
+        }
+    }
+
+    /// Handle coordinate mapping for non-wrapped text (simpler case)
+    #[cfg(feature = "mouse")]
+    fn screen_to_logical_position_unwrapped(&self, rel_x: u16, display_line_index: usize, top_row: usize) -> Option<(usize, usize)> {
+        let logical_row = top_row + display_line_index;
+        
+        // Check if the logical row exists
+        if logical_row >= self.lines().len() {
+            return None;
+        }
+        
+        let line = &self.lines()[logical_row];
+        let mut char_offset = 0;
+        let mut screen_offset = 0;
+        
+        // Account for line numbers if enabled
+        if let Some(_) = self.line_number_style() {
+            let lnum_len = crate::util::num_digits(self.lines().len()) as u16 + 2;
+            if rel_x < lnum_len {
+                // Click was on line number area, position at start of line
+                return Some((logical_row, 0));
+            }
+            screen_offset = lnum_len;
+        }
+        
+        let target_x = rel_x.saturating_sub(screen_offset);
+        
+        // Walk through characters to find the click position
+        for ch in line.chars() {
+            if screen_offset >= rel_x {
+                break;
+            }
+            
+            let char_width = if ch == '\t' {
+                self.tab_len as u16 - (screen_offset % self.tab_len as u16)
+            } else {
+                unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) as u16
+            };
+            
+            if screen_offset + char_width > target_x {
+                break;
+            }
+            
+            screen_offset += char_width;
+            char_offset += 1;
+        }
+        
+        Some((logical_row, char_offset))
+    }
+
+    /// Handle coordinate mapping for wrapped text (more complex case)
+    #[cfg(all(feature = "mouse", feature = "wrap"))]
+    fn screen_to_logical_position_wrapped(&self, rel_x: u16, display_line_index: usize, area_width: u16, top_row: usize) -> Option<(usize, usize)> {
+        let lines_len = self.lines().len();
+        let lnum_len = crate::util::num_digits(lines_len);
+        
+        // Calculate effective wrap width
+        let mut wrap_width = area_width as usize;
+        if self.line_number_style().is_some() {
+            wrap_width = wrap_width.saturating_sub(lnum_len as usize + 2);
+        }
+        if let Some(custom_width) = self.wrap_width() {
+            wrap_width = custom_width;
+        }
+        wrap_width = wrap_width.max(1);
+        
+        let mut current_display_line = 0;
+        
+        // Walk through logical lines to find which one contains our target display line
+        for (logical_row, line_text) in self.lines().iter().enumerate() {
+            if logical_row < top_row {
+                // Skip lines before viewport, but count their wrapped segments
+                let wrapped_count = textwrap::wrap(line_text, wrap_width).len();
+                current_display_line += wrapped_count;
+                continue;
+            }
+            
+            let wrapped_lines = textwrap::wrap(line_text, wrap_width);
+            
+            // Check if our target display line is within this logical line's wrapped segments
+            if display_line_index < current_display_line + wrapped_lines.len() {
+                let wrap_segment_index = display_line_index - current_display_line;
+                let wrapped_segment = &wrapped_lines[wrap_segment_index];
+                
+                // Calculate character offset within the original line
+                let mut char_offset = 0;
+                for (i, segment) in wrapped_lines.iter().enumerate() {
+                    if i == wrap_segment_index {
+                        break;
+                    }
+                    char_offset += segment.chars().count();
+                }
+                
+                // Now find the position within this wrapped segment
+                let mut screen_offset = 0;
+                
+                // Account for line numbers (only on first wrap segment)
+                if wrap_segment_index == 0 && self.line_number_style().is_some() {
+                    let lnum_len = lnum_len as u16 + 2;
+                    if rel_x < lnum_len {
+                        return Some((logical_row, 0));
+                    }
+                    screen_offset = lnum_len;
+                } else if self.line_number_style().is_some() {
+                    // Add padding for continuation lines
+                    screen_offset = lnum_len as u16 + 2;
+                }
+                
+                let target_x = rel_x.saturating_sub(screen_offset);
+                let mut segment_char_offset = 0;
+                
+                for ch in wrapped_segment.chars() {
+                    if screen_offset >= rel_x {
+                        break;
+                    }
+                    
+                    let char_width = if ch == '\t' {
+                        self.tab_len as u16 - (screen_offset % self.tab_len as u16)
+                    } else {
+                        unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) as u16
+                    };
+                    
+                    if screen_offset + char_width > target_x {
+                        break;
+                    }
+                    
+                    screen_offset += char_width;
+                    segment_char_offset += 1;
+                }
+                
+                return Some((logical_row, char_offset + segment_char_offset));
+            }
+            
+            current_display_line += wrapped_lines.len();
+        }
+        
+        None
+    }
+
     /// Check if the textarea has a empty content.
     /// ```
     /// use tui_textarea::TextArea;
@@ -2492,5 +2724,40 @@ mod tests {
         assert_eq!(textarea.cursor(), (15, 0));
         textarea.scroll((-5, 0));
         assert_eq!(textarea.cursor(), (12, 0));
+    }
+
+    #[test]
+    #[cfg(feature = "mouse")]
+    fn mouse_click_coordinate_mapping() {
+        use crate::ratatui::layout::Rect;
+        use crate::ratatui::widgets::{Block, Borders};
+
+        let mut textarea = TextArea::default();
+        textarea.insert_str("Hello\nWorld\nTest");
+        
+        // Test without block (no borders)
+        let widget_area = Rect::new(0, 0, 10, 5);
+        
+        // Click at (1, 1) should position cursor at (1, 1)
+        assert!(textarea.handle_mouse_click(1, 1, widget_area));
+        assert_eq!(textarea.cursor(), (1, 1));
+        
+        // Click at (0, 0) should position cursor at (0, 0)
+        assert!(textarea.handle_mouse_click(0, 0, widget_area));
+        assert_eq!(textarea.cursor(), (0, 0));
+        
+        // Test with block (with borders)
+        textarea.set_block(Block::default().borders(Borders::ALL));
+        
+        // Click at (1, 1) should now position cursor at (0, 0) because borders take up space
+        assert!(textarea.handle_mouse_click(1, 1, widget_area));
+        assert_eq!(textarea.cursor(), (0, 0));
+        
+        // Click at (2, 2) should position cursor at (1, 1)
+        assert!(textarea.handle_mouse_click(2, 2, widget_area));
+        assert_eq!(textarea.cursor(), (1, 1));
+        
+        // Click outside widget area should return false
+        assert!(!textarea.handle_mouse_click(10, 10, widget_area));
     }
 }

@@ -34,6 +34,7 @@ search = ["dep:regex"]
 serde = ["dep:serde"]
 arbitrary = ["dep:arbitrary"]
 wrap = ["dep:textwrap"]
+mouse = []
 
 [dependencies]
 arbitrary = { version = "1", features = ["derive"], optional = true }
@@ -104,6 +105,10 @@ required-features = ["tuirs-termion"]
 [[example]]
 name = "wrap_test"
 required-features = ["crossterm", "wrap"]
+
+[[example]]
+name = "mouse_demo"
+required-features = ["crossterm", "mouse"]
 
 [workspace]
 members = ["bench"]

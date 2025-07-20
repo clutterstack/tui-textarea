@@ -2460,7 +2460,13 @@ impl<'a> TextArea<'a> {
         if shift && self.selection_start.is_none() {
             self.selection_start = Some(self.cursor);
         }
-        scrolling.scroll(&mut self.viewport);
+        
+        #[cfg(feature = "wrap")]
+        let wrap_enabled = self.wrap_enabled();
+        #[cfg(not(feature = "wrap"))]
+        let wrap_enabled = false;
+        
+        scrolling.scroll_with_wrap_check(&mut self.viewport, wrap_enabled);
         self.move_cursor_with_shift(CursorMove::InViewport, shift);
     }
 }

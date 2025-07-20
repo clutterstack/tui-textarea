@@ -1,7 +1,7 @@
 use crate::ratatui::buffer::Buffer;
 use crate::ratatui::layout::Rect;
-use crate::ratatui::text::{Span, Text};
-use crate::ratatui::widgets::{Paragraph, Widget};
+use crate::ratatui::text::Span;
+use crate::ratatui::widgets::Widget;
 use crate::textarea::TextArea;
 use crate::util::num_digits;
 #[cfg(feature = "ratatui")]
@@ -91,41 +91,269 @@ fn next_scroll_top(prev_top: u16, cursor: u16, len: u16) -> u16 {
     }
 }
 
+/// Calculate the visual width of a character, handling tabs and Unicode width
+fn char_visual_width(c: char, position: usize, tab_len: u8) -> usize {
+    match c {
+        '\t' => {
+            if tab_len == 0 {
+                0
+            } else {
+                tab_len as usize - (position % tab_len as usize)
+            }
+        }
+        _ => {
+            use unicode_width::UnicodeWidthChar;
+            c.width().unwrap_or(0)
+        }
+    }
+}
+
+/// Calculate visual position range for horizontal clipping
+/// Returns (start_char_idx, end_char_idx, start_visual_offset)
+fn calculate_horizontal_range(
+    line: &str,
+    col_left: u16,
+    viewport_width: u16,
+    tab_len: u8,
+) -> (usize, usize, usize) {
+    let col_left = col_left as usize;
+    let col_right = col_left + viewport_width as usize;
+    
+    let mut visual_pos = 0;
+    let mut start_char_idx = 0;
+    let mut start_visual_offset = 0;
+    let mut found_start = false;
+    
+    // Find the starting character index
+    for (char_idx, c) in line.char_indices() {
+        let char_width = char_visual_width(c, visual_pos, tab_len);
+        
+        if !found_start {
+            if visual_pos + char_width > col_left {
+                start_char_idx = char_idx;
+                start_visual_offset = if visual_pos < col_left {
+                    col_left - visual_pos
+                } else {
+                    0
+                };
+                found_start = true;
+            }
+        }
+        
+        visual_pos += char_width;
+        
+        // Find the ending character index
+        if found_start && visual_pos >= col_right {
+            // Find the next character boundary
+            for (end_idx, _) in line[char_idx..].char_indices() {
+                return (start_char_idx, char_idx + end_idx, start_visual_offset);
+            }
+            return (start_char_idx, line.len(), start_visual_offset);
+        }
+    }
+    
+    // If we haven't found the start, the entire line is before the viewport
+    if !found_start {
+        return (line.len(), line.len(), 0);
+    }
+    
+    // The line ends within the viewport
+    (start_char_idx, line.len(), start_visual_offset)
+}
+
 impl<'a> TextArea<'a> {
-    fn text_widget(&'a self, top_row: usize, height: usize) -> Text<'a> {
+    fn text_lines(&'a self, top_row: usize, height: usize, area_width: u16) -> Vec<Line<'a>> {
         let lines_len = self.lines().len();
         let lnum_len = num_digits(lines_len);
         let bottom_row = cmp::min(top_row + height, lines_len);
-        let mut lines = Vec::with_capacity(bottom_row - top_row);
-        for (i, line) in self.lines()[top_row..bottom_row].iter().enumerate() {
-            lines.push(self.line_spans(line.as_str(), top_row + i, lnum_len));
+        let mut lines = Vec::new();
+        
+        #[cfg(feature = "wrap")]
+        let wrap_enabled = self.wrap_enabled();
+        #[cfg(not(feature = "wrap"))]
+        let wrap_enabled = false;
+        
+        if wrap_enabled {
+            #[cfg(feature = "wrap")]
+            {
+                // Calculate effective wrap width
+                let mut wrap_width = area_width as usize;
+                
+                // Account for line numbers if enabled
+                if self.line_number_style().is_some() {
+                    wrap_width = wrap_width.saturating_sub(lnum_len as usize + 2);
+                }
+                
+                // Use custom wrap width if set
+                if let Some(custom_width) = self.wrap_width() {
+                    wrap_width = custom_width;
+                }
+                
+                // Ensure minimum width
+                wrap_width = wrap_width.max(1);
+                
+                let mut display_row = 0;
+                for (logical_row, line_text) in self.lines().iter().enumerate() {
+                    if logical_row < top_row {
+                        // Skip lines before the viewport, but count wrapped lines
+                        let wrapped_count = textwrap::wrap(line_text, wrap_width).len();
+                        display_row += wrapped_count;
+                        continue;
+                    }
+                    
+                    if display_row >= top_row + height {
+                        break;
+                    }
+                    
+                    // Wrap the line
+                    let wrapped_lines = textwrap::wrap(line_text, wrap_width);
+                    
+                    for (wrap_index, wrapped_line) in wrapped_lines.iter().enumerate() {
+                        if display_row >= top_row && display_row < top_row + height {
+                            // For wrapped lines, create Line directly with owned content
+                            use crate::ratatui::text::Span;
+                            
+                            let mut spans = Vec::new();
+                            
+                            // Add line number for first wrap segment only
+                            if wrap_index == 0 && self.line_number_style().is_some() {
+                                let lnum_style = self.line_number_style().unwrap();
+                                let lnum = format!(" {:>width$} ", logical_row + 1, width = lnum_len as usize);
+                                spans.push(Span::styled(lnum, lnum_style));
+                            } else if self.line_number_style().is_some() {
+                                // Add padding for wrapped line segments
+                                let padding = " ".repeat(lnum_len as usize + 2);
+                                spans.push(Span::raw(padding));
+                            }
+                            
+                            // Add the wrapped line content
+                            spans.push(Span::styled(wrapped_line.to_string(), self.style()));
+                            
+                            lines.push(Line::from(spans));
+                        }
+                        display_row += 1;
+                        
+                        if display_row >= top_row + height {
+                            break;
+                        }
+                    }
+                }
+            }
+        } else {
+            // Non-wrapping logic with horizontal scrolling support
+            let (_, col_left) = self.viewport.scroll_top();
+            let mut viewport_width = area_width;
+            
+            // Account for line numbers if enabled
+            if self.line_number_style().is_some() {
+                viewport_width = viewport_width.saturating_sub((lnum_len + 2) as u16);
+            }
+            
+            for (i, line) in self.lines()[top_row..bottom_row].iter().enumerate() {
+                // Apply horizontal clipping if there's horizontal scroll
+                if col_left > 0 || line.chars().count() > viewport_width as usize {
+                    let (start_char, end_char, _offset) = calculate_horizontal_range(
+                        line,
+                        col_left,
+                        viewport_width,
+                        self.tab_length(),
+                    );
+                    
+                    if start_char < line.len() {
+                        let clipped_line = &line[start_char..end_char];
+                        lines.push(self.line_spans(clipped_line, top_row + i, lnum_len));
+                    } else {
+                        // Line is entirely before the horizontal viewport
+                        lines.push(self.line_spans("", top_row + i, lnum_len));
+                    }
+                } else {
+                    // No horizontal clipping needed
+                    lines.push(self.line_spans(line.as_str(), top_row + i, lnum_len));
+                }
+            }
         }
-        Text::from(lines)
+        
+        lines
     }
 
-    fn placeholder_widget(&'a self) -> Text<'a> {
+    fn placeholder_lines(&'a self) -> Vec<Line<'a>> {
         let cursor = Span::styled(" ", self.cursor_style);
         let text = Span::raw(self.placeholder.as_str());
-        Text::from(Line::from(vec![cursor, text]))
+        vec![Line::from(vec![cursor, text])]
     }
 
     fn scroll_top_row(&self, prev_top: u16, height: u16) -> u16 {
         next_scroll_top(prev_top, self.cursor().0 as u16, height)
     }
-
-    fn scroll_top_col(&self, prev_top: u16, width: u16) -> u16 {
-        let mut cursor = self.cursor().1 as u16;
-        // Adjust the cursor position due to the width of line number.
-        if self.line_number_style().is_some() {
-            let lnum = num_digits(self.lines().len()) as u16 + 2; // `+ 2` for margins
-            if cursor <= lnum {
-                cursor *= 2; // Smoothly slide the line number into the screen on scrolling left
-            } else {
-                cursor += lnum; // The cursor position is shifted by the line number part
-            };
+    
+    fn scroll_left_col(&self, prev_left: u16, width: u16) -> u16 {
+        #[cfg(feature = "wrap")]
+        let wrap_enabled = self.wrap_enabled();
+        #[cfg(not(feature = "wrap"))]
+        let wrap_enabled = false;
+        
+        if wrap_enabled {
+            return 0; // No horizontal scrolling when wrap is enabled
         }
-        next_scroll_top(prev_top, cursor, width)
+        
+        // Calculate available width for text content
+        let mut text_width = width;
+        if self.line_number_style().is_some() {
+            let lines_len = self.lines().len();
+            let lnum_len = num_digits(lines_len);
+            text_width = text_width.saturating_sub((lnum_len + 2) as u16);
+        }
+        
+        // Calculate cursor visual position considering tabs and Unicode width
+        let (cursor_row, cursor_col) = self.cursor();
+        if cursor_row >= self.lines().len() {
+            return prev_left;
+        }
+        
+        let line = &self.lines()[cursor_row];
+        let mut visual_pos = 0;
+        
+        for (char_idx, c) in line.char_indices() {
+            if line[..char_idx].chars().count() >= cursor_col {
+                break;
+            }
+            visual_pos += char_visual_width(c, visual_pos, self.tab_length());
+        }
+        
+        next_scroll_top(prev_left, visual_pos as u16, text_width)
     }
+
+    fn render_lines(&self, lines: Vec<Line<'a>>, area: Rect, buf: &mut Buffer) {
+        use crate::ratatui::layout::Alignment;
+        
+        for (i, line) in lines.into_iter().enumerate() {
+            let y = area.y + i as u16;
+            
+            // Bounds check - don't render lines outside the text area
+            if y >= area.y + area.height {
+                break;
+            }
+            
+            // Create a single-line area for this line
+            let line_area = Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height: 1,
+            };
+            
+            // Apply alignment manually for each line
+            let aligned_line = match self.alignment() {
+                Alignment::Left => line,
+                Alignment::Center => line.centered(),
+                Alignment::Right => line.right_aligned(),
+            };
+            
+            // Render the line widget
+            aligned_line.render(line_area, buf);
+        }
+    }
+
 }
 
 impl Widget for &TextArea<'_> {
@@ -136,22 +364,19 @@ impl Widget for &TextArea<'_> {
             area
         };
 
-        let (top_row, top_col) = self.viewport.scroll_top();
+        let (top_row, left_col) = self.viewport.scroll_top();
         let top_row = self.scroll_top_row(top_row, height);
-        let top_col = self.scroll_top_col(top_col, width);
+        let left_col = self.scroll_left_col(left_col, width);
 
-        let (text, style) = if !self.placeholder.is_empty() && self.is_empty() {
-            (self.placeholder_widget(), self.placeholder_style)
+        let lines = if !self.placeholder.is_empty() && self.is_empty() {
+            self.placeholder_lines()
         } else {
-            (self.text_widget(top_row as _, height as _), self.style())
+            self.text_lines(top_row as _, height as _, width)
         };
 
         // To get fine control over the text color and the surrrounding block they have to be rendered separately
         // see https://github.com/ratatui/ratatui/issues/144
         let mut text_area = area;
-        let mut inner = Paragraph::new(text)
-            .style(style)
-            .alignment(self.alignment());
         if let Some(b) = self.block() {
             text_area = b.inner(area);
             // ratatui does not need `clone()` call because `Block` implements `WidgetRef` and `&T` implements `Widget`
@@ -160,13 +385,10 @@ impl Widget for &TextArea<'_> {
             let b = b.clone();
             b.render(area, buf)
         }
-        if top_col != 0 {
-            inner = inner.scroll((0, top_col));
-        }
 
-        // Store scroll top position for rendering on the next tick
-        self.viewport.store(top_row, top_col, width, height);
+        // Store scroll position for rendering on the next tick
+        self.viewport.store(top_row, left_col, width, height);
 
-        inner.render(text_area, buf);
+        self.render_lines(lines, text_area, buf);
     }
 }

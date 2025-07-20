@@ -242,7 +242,12 @@ impl<'a> TextArea<'a> {
         } else {
             // Non-wrapping logic with horizontal scrolling support
             let (_, col_left) = self.viewport.scroll_top();
-            let viewport_width = area_width;
+            let mut viewport_width = area_width;
+            
+            // Account for line numbers if enabled
+            if self.line_number_style().is_some() {
+                viewport_width = viewport_width.saturating_sub((lnum_len + 2) as u16);
+            }
             
             for (i, line) in self.lines()[top_row..bottom_row].iter().enumerate() {
                 // Apply horizontal clipping if there's horizontal scroll
@@ -291,6 +296,14 @@ impl<'a> TextArea<'a> {
             return 0; // No horizontal scrolling when wrap is enabled
         }
         
+        // Calculate available width for text content
+        let mut text_width = width;
+        if self.line_number_style().is_some() {
+            let lines_len = self.lines().len();
+            let lnum_len = num_digits(lines_len);
+            text_width = text_width.saturating_sub((lnum_len + 2) as u16);
+        }
+        
         // Calculate cursor visual position considering tabs and Unicode width
         let (cursor_row, cursor_col) = self.cursor();
         if cursor_row >= self.lines().len() {
@@ -307,7 +320,7 @@ impl<'a> TextArea<'a> {
             visual_pos += char_visual_width(c, visual_pos, self.tab_length());
         }
         
-        next_scroll_top(prev_left, visual_pos as u16, width)
+        next_scroll_top(prev_left, visual_pos as u16, text_width)
     }
 
     fn render_lines(&self, lines: Vec<Line<'a>>, area: Rect, buf: &mut Buffer) {

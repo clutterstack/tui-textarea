@@ -11,13 +11,14 @@ Multi-line text editor can be easily put as part of your TUI application.
 **Features:**
 
 - Multi-line text editor widget with basic operations (insert/delete characters, auto scrolling, ...)
+- **Text wrapping** support with configurable wrap width
 - Emacs-like shortcuts (`C-n`/`C-p`/`C-f`/`C-b`, `M-f`/`M-b`, `C-a`/`C-e`, `C-h`/`C-d`, `C-k`, `M-<`/`M->`, ...)
 - Undo/Redo
 - Line number
 - Cursor line highlight
 - Search with regular expressions
 - Text selection
-- Mouse scrolling
+- Mouse scrolling (vertical only)
 - Yank support. Paste text deleted with `C-k`, `C-j`, ...
 - Backend agnostic. [crossterm][], [termion][], [termwiz][], and your own backend are all supported
 - Multiple textarea widgets in the same screen
@@ -107,6 +108,16 @@ Password input form with masking text with ●.
 
 <img src="https://raw.githubusercontent.com/rhysd/ss/master/tui-textarea/password.gif" width=589 height=92 alt="password example">
 
+### [`wrap_test`](./examples/wrap_test.rs)
+
+```sh
+cargo run --example wrap_test --features wrap
+```
+
+Text wrapping demonstration. Toggle wrapping on/off with Ctrl+W.
+
+*Note: This example requires the `wrap` feature to be enabled.*
+
 ### [`termion`](./examples/termion.rs)
 
 ```sh
@@ -155,6 +166,22 @@ If you need text search with regular expressions, enable `search` feature. It ad
 [dependencies]
 ratatui = "*"
 tui-textarea = { version = "*", features = ["search"] }
+```
+
+If you want text wrapping support, enable the `wrap` feature. It adds [textwrap crate][textwrap] as dependency.
+
+```toml
+[dependencies]
+ratatui = "*"
+tui-textarea = { version = "*", features = ["wrap"] }
+```
+
+You can enable multiple features at once:
+
+```toml
+[dependencies]
+ratatui = "*"
+tui-textarea = { version = "*", features = ["search", "wrap"] }
 ```
 
 If you're using ratatui with [termion][] or [termwiz][], enable the `termion` or `termwiz` feature instead of
@@ -435,6 +462,69 @@ depending on `regex` crate until it is necessary.
 tui-textarea = { version = "*", features = ["search"] }
 ```
 
+### Text wrapping
+
+`TextArea` supports automatic text wrapping for long lines. When enabled, lines that exceed the specified width will be
+wrapped to fit within the available space. This feature is particularly useful for applications that need to display
+text in narrow columns or want to avoid horizontal scrolling.
+
+To enable text wrapping, you need to enable the `wrap` feature in your `Cargo.toml`:
+
+```toml
+tui-textarea = { version = "*", features = ["wrap"] }
+```
+
+Then configure wrapping in your code:
+
+```rust,ignore
+let mut textarea = TextArea::default();
+
+// Enable wrapping
+textarea.set_wrap(true);
+
+// Optional: Set a custom wrap width (defaults to text area width)
+textarea.set_wrap_width(Some(80)); // Wrap at 80 characters
+
+// Check if wrapping is enabled
+if textarea.wrap_enabled() {
+    println!("Wrapping is enabled with width: {:?}", textarea.wrap_width());
+}
+```
+
+When text wrapping is enabled:
+- Long lines are automatically broken at word boundaries
+- Line numbers are only shown for the first segment of wrapped lines
+- Vertical scrolling works as expected with wrapped content
+- Horizontal scrolling is disabled (not needed when text wraps)
+
+**Note:** Text wrapping is incompatible with horizontal scrolling. When wrapping is enabled, the editor focuses on
+vertical navigation only.
+
+## Breaking Changes
+
+### Horizontal Scrolling Removal
+
+Starting from this version, **horizontal scrolling has been removed** from tui-textarea. This change was made to:
+
+- Simplify the codebase and improve maintainability
+- Enable efficient text wrapping support
+- Focus on vertical text navigation which is more commonly needed
+- Improve performance by eliminating complex horizontal scroll calculations
+
+**Migration:**
+
+- **If you relied on horizontal scrolling**: Consider enabling text wrapping instead with `textarea.set_wrap(true)`
+- **If you have wide content**: Set a custom wrap width with `textarea.set_wrap_width(Some(width))`
+- **If you need to view long lines**: The content will extend past the right edge of the text area
+
+**Alternative approaches:**
+- Use text wrapping for better readability: `textarea.set_wrap(true)`
+- Implement your own horizontal scrolling using `CursorMove::Jump(row, col)` if absolutely necessary
+- Consider reformatting your content to fit within typical terminal widths
+
+This change affects the internal rendering architecture but maintains all other editor functionality including cursor
+movement, text editing, search, undo/redo, and all keyboard shortcuts.
+
 ## Advanced Usage
 
 ### Single-line input like `<input>` in HTML
@@ -514,6 +604,10 @@ notify how to move the cursor.
 | `textarea.scroll(Scrolling::HalfPageDown)`           | Scroll down the viewport by half-page           |
 | `textarea.scroll(Scrolling::HalfPageUp)`             | Scroll up the viewport by half-page             |
 | `textarea.scroll((row, col))`                        | Scroll down the viewport to (row, col) position |
+| `textarea.set_wrap(true)`                            | Enable text wrapping (requires `wrap` feature)  |
+| `textarea.set_wrap_width(Some(80))`                  | Set custom wrap width (requires `wrap` feature) |
+| `textarea.wrap_enabled()`                            | Check if wrapping is enabled                     |
+| `textarea.wrap_width()`                              | Get current wrap width setting                   |
 
 To define your own key mappings, simply call the above methods in your code instead of `TextArea::input()` method.
 
@@ -729,3 +823,4 @@ tui-textarea is distributed under [The MIT License](./LICENSE.txt).
 [regex]: https://docs.rs/regex/latest/regex/
 [serde]: https://crates.io/crates/serde
 [serde_json]: https://crates.io/crates/serde_json
+[textwrap]: https://docs.rs/textwrap/latest/textwrap/

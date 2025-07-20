@@ -64,7 +64,7 @@ impl Viewport {
         self.0.store(u, Ordering::Relaxed);
     }
 
-    pub fn scroll(&mut self, rows: i16, _cols: i16) {
+    pub fn scroll(&mut self, rows: i16, cols: i16) {
         fn apply_scroll(pos: u16, delta: i16) -> u16 {
             if delta >= 0 {
                 pos.saturating_add(delta as u16)
@@ -75,7 +75,7 @@ impl Viewport {
 
         let u = self.0.get_mut();
         let row = apply_scroll((*u >> 16) as u16, rows);
-        let col = 0; // No horizontal scrolling
+        let col = apply_scroll(*u as u16, cols);
         *u = (*u & 0xffff_ffff_0000_0000) | ((row as u64) << 16) | (col as u64);
     }
 }
@@ -91,8 +91,78 @@ fn next_scroll_top(prev_top: u16, cursor: u16, len: u16) -> u16 {
     }
 }
 
+/// Calculate the visual width of a character, handling tabs and Unicode width
+fn char_visual_width(c: char, position: usize, tab_len: u8) -> usize {
+    match c {
+        '\t' => {
+            if tab_len == 0 {
+                0
+            } else {
+                tab_len as usize - (position % tab_len as usize)
+            }
+        }
+        _ => {
+            use unicode_width::UnicodeWidthChar;
+            c.width().unwrap_or(0)
+        }
+    }
+}
+
+/// Calculate visual position range for horizontal clipping
+/// Returns (start_char_idx, end_char_idx, start_visual_offset)
+fn calculate_horizontal_range(
+    line: &str,
+    col_left: u16,
+    viewport_width: u16,
+    tab_len: u8,
+) -> (usize, usize, usize) {
+    let col_left = col_left as usize;
+    let col_right = col_left + viewport_width as usize;
+    
+    let mut visual_pos = 0;
+    let mut start_char_idx = 0;
+    let mut start_visual_offset = 0;
+    let mut found_start = false;
+    
+    // Find the starting character index
+    for (char_idx, c) in line.char_indices() {
+        let char_width = char_visual_width(c, visual_pos, tab_len);
+        
+        if !found_start {
+            if visual_pos + char_width > col_left {
+                start_char_idx = char_idx;
+                start_visual_offset = if visual_pos < col_left {
+                    col_left - visual_pos
+                } else {
+                    0
+                };
+                found_start = true;
+            }
+        }
+        
+        visual_pos += char_width;
+        
+        // Find the ending character index
+        if found_start && visual_pos >= col_right {
+            // Find the next character boundary
+            for (end_idx, _) in line[char_idx..].char_indices() {
+                return (start_char_idx, char_idx + end_idx, start_visual_offset);
+            }
+            return (start_char_idx, line.len(), start_visual_offset);
+        }
+    }
+    
+    // If we haven't found the start, the entire line is before the viewport
+    if !found_start {
+        return (line.len(), line.len(), 0);
+    }
+    
+    // The line ends within the viewport
+    (start_char_idx, line.len(), start_visual_offset)
+}
+
 impl<'a> TextArea<'a> {
-    fn text_lines(&'a self, top_row: usize, height: usize, #[allow(unused_variables)] area_width: u16) -> Vec<Line<'a>> {
+    fn text_lines(&'a self, top_row: usize, height: usize, area_width: u16) -> Vec<Line<'a>> {
         let lines_len = self.lines().len();
         let lnum_len = num_digits(lines_len);
         let bottom_row = cmp::min(top_row + height, lines_len);
@@ -170,9 +240,36 @@ impl<'a> TextArea<'a> {
                 }
             }
         } else {
-            // Original non-wrapping logic
+            // Non-wrapping logic with horizontal scrolling support
+            let (_, col_left) = self.viewport.scroll_top();
+            let mut viewport_width = area_width;
+            
+            // Account for line numbers if enabled
+            if self.line_number_style().is_some() {
+                viewport_width = viewport_width.saturating_sub((lnum_len + 2) as u16);
+            }
+            
             for (i, line) in self.lines()[top_row..bottom_row].iter().enumerate() {
-                lines.push(self.line_spans(line.as_str(), top_row + i, lnum_len));
+                // Apply horizontal clipping if there's horizontal scroll
+                if col_left > 0 || line.chars().count() > viewport_width as usize {
+                    let (start_char, end_char, _offset) = calculate_horizontal_range(
+                        line,
+                        col_left,
+                        viewport_width,
+                        self.tab_length(),
+                    );
+                    
+                    if start_char < line.len() {
+                        let clipped_line = &line[start_char..end_char];
+                        lines.push(self.line_spans(clipped_line, top_row + i, lnum_len));
+                    } else {
+                        // Line is entirely before the horizontal viewport
+                        lines.push(self.line_spans("", top_row + i, lnum_len));
+                    }
+                } else {
+                    // No horizontal clipping needed
+                    lines.push(self.line_spans(line.as_str(), top_row + i, lnum_len));
+                }
             }
         }
         
@@ -187,6 +284,43 @@ impl<'a> TextArea<'a> {
 
     fn scroll_top_row(&self, prev_top: u16, height: u16) -> u16 {
         next_scroll_top(prev_top, self.cursor().0 as u16, height)
+    }
+    
+    fn scroll_left_col(&self, prev_left: u16, width: u16) -> u16 {
+        #[cfg(feature = "wrap")]
+        let wrap_enabled = self.wrap_enabled();
+        #[cfg(not(feature = "wrap"))]
+        let wrap_enabled = false;
+        
+        if wrap_enabled {
+            return 0; // No horizontal scrolling when wrap is enabled
+        }
+        
+        // Calculate available width for text content
+        let mut text_width = width;
+        if self.line_number_style().is_some() {
+            let lines_len = self.lines().len();
+            let lnum_len = num_digits(lines_len);
+            text_width = text_width.saturating_sub((lnum_len + 2) as u16);
+        }
+        
+        // Calculate cursor visual position considering tabs and Unicode width
+        let (cursor_row, cursor_col) = self.cursor();
+        if cursor_row >= self.lines().len() {
+            return prev_left;
+        }
+        
+        let line = &self.lines()[cursor_row];
+        let mut visual_pos = 0;
+        
+        for (char_idx, c) in line.char_indices() {
+            if line[..char_idx].chars().count() >= cursor_col {
+                break;
+            }
+            visual_pos += char_visual_width(c, visual_pos, self.tab_length());
+        }
+        
+        next_scroll_top(prev_left, visual_pos as u16, text_width)
     }
 
     fn render_lines(&self, lines: Vec<Line<'a>>, area: Rect, buf: &mut Buffer) {
@@ -230,8 +364,9 @@ impl Widget for &TextArea<'_> {
             area
         };
 
-        let (top_row, _) = self.viewport.scroll_top();
+        let (top_row, left_col) = self.viewport.scroll_top();
         let top_row = self.scroll_top_row(top_row, height);
+        let left_col = self.scroll_left_col(left_col, width);
 
         let lines = if !self.placeholder.is_empty() && self.is_empty() {
             self.placeholder_lines()
@@ -251,8 +386,8 @@ impl Widget for &TextArea<'_> {
             b.render(area, buf)
         }
 
-        // Store scroll top position for rendering on the next tick
-        self.viewport.store(top_row, 0, width, height);
+        // Store scroll position for rendering on the next tick
+        self.viewport.store(top_row, left_col, width, height);
 
         self.render_lines(lines, text_area, buf);
     }

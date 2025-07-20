@@ -155,9 +155,9 @@ pub enum Scrolling {
 }
 
 impl Scrolling {
-    pub(crate) fn scroll(self, viewport: &mut Viewport) {
+    pub(crate) fn scroll_with_wrap_check(self, viewport: &mut Viewport, wrap_enabled: bool) {
         let (rows, cols) = match self {
-            Self::Delta { rows, cols } => (rows, cols),
+            Self::Delta { rows, cols } => (rows, if wrap_enabled { 0 } else { cols }),
             Self::PageDown => {
                 let (_, _, _, height) = viewport.rect();
                 (height as i16, 0)

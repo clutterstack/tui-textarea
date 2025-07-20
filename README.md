@@ -19,7 +19,7 @@ Multi-line text editor can be easily put as part of your TUI application.
 - Cursor line highlight
 - Search with regular expressions
 - Text selection
-- Mouse scrolling (vertical only)
+- Mouse scrolling (vertical and horizontal)
 - Yank support. Paste text deleted with `C-k`, `C-j`, ...
 - Backend agnostic. [crossterm][], [termion][], [termwiz][], and your own backend are all supported
 - Multiple textarea widgets in the same screen
@@ -514,10 +514,9 @@ When text wrapping is enabled:
 - Long lines are automatically broken at word boundaries
 - Line numbers are only shown for the first segment of wrapped lines
 - Vertical scrolling works as expected with wrapped content
-- Horizontal scrolling is disabled (not needed when text wraps)
+- Horizontal scrolling is automatically disabled (not needed when text wraps)
 
-**Note:** Text wrapping is incompatible with horizontal scrolling. When wrapping is enabled, the editor focuses on
-vertical navigation only.
+**Note:** Text wrapping and horizontal scrolling are mutually exclusive. When wrapping is enabled, the editor automatically disables horizontal scrolling and focuses on vertical navigation only.
 
 ### Mouse Support
 
@@ -573,30 +572,32 @@ When mouse support is enabled:
 
 **Note:** You must enable mouse capture in your terminal backend (e.g., `EnableMouseCapture` for crossterm) for mouse events to be received.
 
-## Breaking Changes
+### Horizontal Scrolling
 
-### Horizontal Scrolling Removal
+`TextArea` supports horizontal scrolling for viewing long lines that extend beyond the text area width. This feature works seamlessly with other text area functionality and properly accounts for line numbers when displayed.
 
-Starting from this version, **horizontal scrolling has been removed** from tui-textarea. This change was made to:
+Key features of horizontal scrolling:
 
-- Simplify the codebase and improve maintainability
-- Enable efficient text wrapping support
-- Focus on vertical text navigation which is more commonly needed
-- Improve performance by eliminating complex horizontal scroll calculations
+- **Automatic scrolling**: The viewport automatically scrolls horizontally when the cursor moves beyond the visible area
+- **Line number support**: Horizontal scrolling correctly accounts for line number column width
+- **Border awareness**: Scrolling calculations respect widget borders and padding
+- **Mouse integration**: Works with mouse events and cursor positioning
+- **Compatible with wrapping**: When text wrapping is enabled, horizontal scrolling is automatically disabled
 
-**Migration:**
+**Usage:**
 
-- **If you relied on horizontal scrolling**: Consider enabling text wrapping instead with `textarea.set_wrap(true)`
-- **If you have wide content**: Set a custom wrap width with `textarea.set_wrap_width(Some(width))`
-- **If you need to view long lines**: The content will extend past the right edge of the text area
+Horizontal scrolling is enabled automatically - no configuration required. The text area will scroll horizontally when:
+- The cursor moves beyond the right edge of the viewport
+- Text extends beyond the available width
+- You navigate to content that's not currently visible
 
-**Alternative approaches:**
-- Use text wrapping for better readability: `textarea.set_wrap(true)`
-- Implement your own horizontal scrolling using `CursorMove::Jump(row, col)` if absolutely necessary
-- Consider reformatting your content to fit within typical terminal widths
+**Key mappings for horizontal navigation:**
+- `Ctrl+F`, `→`: Move cursor forward (triggers horizontal scroll if needed)
+- `Ctrl+B`, `←`: Move cursor backward (triggers horizontal scroll if needed)  
+- `Ctrl+A`, `Home`: Move to line start (scrolls to show beginning of line)
+- `Ctrl+E`, `End`: Move to line end (scrolls to show end of line)
 
-This change affects the internal rendering architecture but maintains all other editor functionality including cursor
-movement, text editing, search, undo/redo, and all keyboard shortcuts.
+**Note:** Horizontal scrolling is automatically disabled when text wrapping is enabled (`textarea.set_wrap(true)`), since wrapped text doesn't need horizontal navigation.
 
 ## Advanced Usage
 
@@ -676,7 +677,7 @@ notify how to move the cursor.
 | `textarea.scroll(Scrolling::PageUp)`                 | Scroll up the viewport by page                  |
 | `textarea.scroll(Scrolling::HalfPageDown)`           | Scroll down the viewport by half-page           |
 | `textarea.scroll(Scrolling::HalfPageUp)`             | Scroll up the viewport by half-page             |
-| `textarea.scroll((row, col))`                        | Scroll down the viewport to (row, col) position |
+| `textarea.scroll((row, col))`                        | Scroll the viewport by (row, col) delta (supports horizontal scrolling) |
 | `textarea.set_wrap(true)`                            | Enable text wrapping (requires `wrap` feature)  |
 | `textarea.set_wrap_width(Some(80))`                  | Set custom wrap width (requires `wrap` feature) |
 | `textarea.wrap_enabled()`                            | Check if wrapping is enabled                     |

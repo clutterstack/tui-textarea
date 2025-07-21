@@ -2313,7 +2313,7 @@ impl<'a> TextArea<'a> {
             return false;
         }
         
-        if let Some((row, col)) = self.screen_to_logical_position(rel_x, rel_y, text_area.width) {
+        if let Some((row, col)) = self.screen_to_logical_position(rel_x, rel_y, text_area.width, text_area.height) {
             self.move_cursor(crate::cursor::CursorMove::Jump(row as u16, col as u16));
             true
         } else {
@@ -2324,7 +2324,7 @@ impl<'a> TextArea<'a> {
     /// Convert screen coordinates (relative to text area) to logical text position.
     /// Returns `Some((row, col))` if the coordinates map to valid text content.
     #[cfg(feature = "mouse")]
-    fn screen_to_logical_position(&self, rel_x: u16, rel_y: u16, area_width: u16) -> Option<(usize, usize)> {
+    pub fn screen_to_logical_position(&self, rel_x: u16, rel_y: u16, area_width: u16, _area_height: u16) -> Option<(usize, usize)> {
         // Get the current viewport information
         let (top_row, _) = self.viewport.scroll_top();
         let display_line_index = rel_y as usize;

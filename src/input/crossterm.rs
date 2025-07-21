@@ -80,6 +80,12 @@ impl From<MouseEvent> for Input {
             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
                 Key::MouseClick(mouse.column, mouse.row)
             }
+            MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+                Key::MouseDrag(mouse.column, mouse.row)
+            }
+            MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
+                Key::MouseUp(mouse.column, mouse.row)
+            }
             _ => Key::from(mouse.kind),
         };
         

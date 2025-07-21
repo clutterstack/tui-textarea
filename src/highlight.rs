@@ -251,6 +251,51 @@ impl<'a> LineHighlighter<'a> {
     }
 }
 
+/// Extract spans that correspond to a character range within a highlighted line
+pub fn extract_segment_spans<'a>(
+    highlighted_line: Line<'a>,
+    segment_start_char: usize,
+    segment_end_char: usize,
+) -> Vec<Span<'a>> {
+    let mut result = Vec::new();
+    let mut current_char_pos = 0;
+
+    for span in highlighted_line.spans {
+        let span_content = span.content.as_ref();
+        let span_char_len = span_content.chars().count();
+        let span_end_pos = current_char_pos + span_char_len;
+
+        // Skip spans that are completely before our target range
+        if span_end_pos <= segment_start_char {
+            current_char_pos = span_end_pos;
+            continue;
+        }
+
+        // Stop if we're completely past our target range
+        if current_char_pos >= segment_end_char {
+            break;
+        }
+
+        // Calculate the intersection of this span with our target range
+        let extract_start = segment_start_char.saturating_sub(current_char_pos);
+        let extract_end = (segment_end_char - current_char_pos).min(span_char_len);
+
+        // Extract the substring (by characters, not bytes)
+        if extract_start < extract_end {
+            let chars: Vec<char> = span_content.chars().collect();
+            let extracted: String = chars[extract_start..extract_end].iter().collect();
+            
+            if !extracted.is_empty() {
+                result.push(Span::styled(extracted, span.style));
+            }
+        }
+
+        current_char_pos = span_end_pos;
+    }
+
+    result
+}
+
 // Tests for spans don't work with tui-rs
 #[cfg(all(test, feature = "ratatui"))]
 mod tests {

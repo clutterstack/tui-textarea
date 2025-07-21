@@ -84,7 +84,7 @@ fn main() -> io::Result<()> {
                  • Click anywhere in the text area to position cursor\n\
                  • 'w' - Toggle text wrapping (current: {})\n\
                  • 'l' - Toggle line numbers\n\
-                 • 'q' - Quit\n\
+                 • 'Ctrl+q' - Quit\n\
                  \n\
                  Cursor: ({}, {})\n\
                  {}",
@@ -104,8 +104,8 @@ fn main() -> io::Result<()> {
         writeln!(log_file, "Event received: {:?}", event)?;
         
         if let Event::Key(key) = event {
-            match key.code {
-                KeyCode::Char('q') => {
+            match (key.code,  {
+                (KeyCode::Char('q'), KeyModifiers::CONTROL) => {
                     break;
                 }
                 KeyCode::Char('w') => {

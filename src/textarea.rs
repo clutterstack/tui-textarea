@@ -2382,6 +2382,16 @@ impl<'a> TextArea<'a> {
     // ===== Mouse handling methods =====
 
     #[cfg(feature = "mouse")]
+    pub fn handle_mouse_event(&mut self, key: Key, widget_area: crate::ratatui::layout::Rect) -> bool {
+        match key {
+            Key::MouseClick(x, y) => self.handle_mouse_click(x, y, widget_area),
+            Key::MouseDrag(x, y) => self.handle_mouse_drag(x, y, widget_area),
+            Key::MouseUp(x, y) => self.handle_mouse_up(x, y, widget_area),
+            _ => false,
+        }
+    }
+
+    #[cfg(feature = "mouse")]
     pub fn handle_mouse_click(&mut self, screen_x: u16, screen_y: u16, widget_area: crate::ratatui::layout::Rect) -> bool {
         // Calculate the actual text area, accounting for block borders if present
         let text_area = if let Some(block) = self.block() {
@@ -2400,6 +2410,62 @@ impl<'a> TextArea<'a> {
         }
         
         if let Some((row, col)) = self.screen_to_logical_position(rel_x, rel_y, text_area.width, text_area.height) {
+            // Start selection on mouse down
+            self.selection_start = Some((row, col));
+            self.move_cursor(crate::cursor::CursorMove::Jump(row as u16, col as u16));
+            true
+        } else {
+            false
+        }
+    }
+
+    #[cfg(feature = "mouse")]
+    pub fn handle_mouse_drag(&mut self, screen_x: u16, screen_y: u16, widget_area: crate::ratatui::layout::Rect) -> bool {
+        // Calculate the actual text area, accounting for block borders if present
+        let text_area = if let Some(block) = self.block() {
+            block.inner(widget_area)
+        } else {
+            widget_area
+        };
+        
+        // Convert screen coordinates to text area relative coordinates
+        let rel_x = screen_x.saturating_sub(text_area.x);
+        let rel_y = screen_y.saturating_sub(text_area.y);
+        
+        // Check if drag is within the text area bounds
+        if rel_x >= text_area.width || rel_y >= text_area.height {
+            return false;
+        }
+        
+        if let Some((row, col)) = self.screen_to_logical_position(rel_x, rel_y, text_area.width, text_area.height) {
+            // Extend selection to current drag position
+            self.move_cursor(crate::cursor::CursorMove::Jump(row as u16, col as u16));
+            true
+        } else {
+            false
+        }
+    }
+
+    #[cfg(feature = "mouse")]
+    pub fn handle_mouse_up(&mut self, screen_x: u16, screen_y: u16, widget_area: crate::ratatui::layout::Rect) -> bool {
+        // Calculate the actual text area, accounting for block borders if present
+        let text_area = if let Some(block) = self.block() {
+            block.inner(widget_area)
+        } else {
+            widget_area
+        };
+        
+        // Convert screen coordinates to text area relative coordinates
+        let rel_x = screen_x.saturating_sub(text_area.x);
+        let rel_y = screen_y.saturating_sub(text_area.y);
+        
+        // Check if release is within the text area bounds
+        if rel_x >= text_area.width || rel_y >= text_area.height {
+            return false;
+        }
+        
+        if let Some((row, col)) = self.screen_to_logical_position(rel_x, rel_y, text_area.width, text_area.height) {
+            // Finalize selection at current position
             self.move_cursor(crate::cursor::CursorMove::Jump(row as u16, col as u16));
             true
         } else {
@@ -3013,6 +3079,55 @@ impl<'a> TextArea<'a> {
         
         scrolling.scroll_with_wrap_check(&mut self.viewport, wrap_enabled);
         self.move_cursor_with_shift(CursorMove::InViewport, shift);
+    }
+
+
+    /// Helper function to find a slice of characters within another slice of characters
+    #[cfg(feature = "wrap")]
+    fn find_char_slice_in_chars(haystack: &[char], needle: &[char]) -> Option<usize> {
+        if needle.is_empty() {
+            return Some(0);
+        }
+        
+        haystack
+            .windows(needle.len())
+            .position(|window| window == needle)
+    }
+
+    /// Calculate the character range of a wrapped segment within the original line text
+    #[cfg(feature = "wrap")]
+    pub(crate) fn calculate_segment_char_range(
+        full_line: &str,
+        wrapped_lines: &[std::borrow::Cow<str>],
+        target_wrap_index: usize,
+    ) -> (usize, usize) {
+        let mut current_char_pos = 0;
+        let full_line_chars: Vec<char> = full_line.chars().collect();
+
+        for (seg_idx, segment) in wrapped_lines.iter().enumerate() {
+            let segment_chars: Vec<char> = segment.chars().collect();
+            let segment_char_len = segment_chars.len();
+
+            if seg_idx == target_wrap_index {
+                let start_char = current_char_pos;
+                let end_char = current_char_pos + segment_char_len;
+                return (start_char, end_char);
+            }
+
+            // Find the segment within the remaining part of the full line
+            let remaining_chars = &full_line_chars[current_char_pos..];
+            
+            // Look for the segment text in the remaining characters
+            if let Some(found_pos) = Self::find_char_slice_in_chars(remaining_chars, &segment_chars) {
+                current_char_pos += found_pos + segment_char_len;
+            } else {
+                // Fallback: just advance by segment length
+                current_char_pos += segment_char_len;
+            }
+        }
+
+        // If target_wrap_index is beyond available segments, return end position
+        (current_char_pos, current_char_pos)
     }
 }
 

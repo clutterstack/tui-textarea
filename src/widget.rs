@@ -5,6 +5,8 @@ use crate::ratatui::widgets::Widget;
 use crate::ratatui::style::Style;
 use crate::textarea::TextArea;
 use crate::util::num_digits;
+#[cfg(feature = "wrap")]
+use crate::highlight::extract_segment_spans;
 #[cfg(feature = "ratatui")]
 use ratatui::text::Line;
 use std::cmp;
@@ -249,7 +251,26 @@ impl<'a> TextArea<'a> {
                             }
                         }
 
-                        spans.push(Span::styled(wrapped_line.to_string(), self.style()));
+                        // Get fully highlighted line (handles selection, cursor, search, etc.)
+                        let full_highlighted_line = self.line_spans(line_text, logical_row, 0);
+                        
+                        // Calculate character range for this wrapped segment
+                        let (segment_start_char, segment_end_char) = 
+                            TextArea::calculate_segment_char_range(line_text, &wrapped_lines, wrap_index);
+                        
+                        // Extract spans for this segment from the highlighted line
+                        let segment_spans = extract_segment_spans(
+                            full_highlighted_line,
+                            segment_start_char,
+                            segment_end_char,
+                        );
+                        
+                        // Add extracted spans to our line, or fallback if empty
+                        if segment_spans.is_empty() {
+                            spans.push(Span::styled(wrapped_line.to_string(), self.style()));
+                        } else {
+                            spans.extend(segment_spans);
+                        }
                         lines.push(Line::from(spans));
                     }
 

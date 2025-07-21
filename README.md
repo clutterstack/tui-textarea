@@ -570,6 +570,43 @@ When mouse support is enabled:
 - Falls back gracefully if clicks are outside the text area
 - Existing mouse scrolling functionality is preserved
 
+For complete mouse selection support including drag selection, use the `handle_mouse_event()` method:
+
+```rust,ignore
+use tui_textarea::Key;
+
+match event::read()? {
+    Event::Mouse(mouse) => {
+        let mouse_key = match mouse.kind {
+            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                Some(Key::MouseClick(mouse.column, mouse.row))
+            }
+            MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+                Some(Key::MouseDrag(mouse.column, mouse.row))
+            }
+            MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
+                Some(Key::MouseUp(mouse.column, mouse.row))
+            }
+            _ => None,
+        };
+
+        if let Some(key) = mouse_key {
+            let widget_area = /* your widget area */;
+            if textarea.handle_mouse_event(key, widget_area) {
+                // Mouse event was handled
+            }
+        }
+    }
+    // ... handle other events
+}
+```
+
+This provides full mouse selection support including:
+- Click-to-position cursor
+- Drag selection with visual highlighting
+- Text selection that works with wrapped text
+- Proper handling of widget borders and padding
+
 **Note:** You must enable mouse capture in your terminal backend (e.g., `EnableMouseCapture` for crossterm) for mouse events to be received.
 
 ### Horizontal Scrolling
@@ -683,6 +720,7 @@ notify how to move the cursor.
 | `textarea.wrap_enabled()`                            | Check if wrapping is enabled                     |
 | `textarea.wrap_width()`                              | Get current wrap width setting                   |
 | `textarea.handle_mouse_click(x, y, area)`            | Handle mouse click at screen coordinates (requires `mouse` feature) |
+| `textarea.handle_mouse_event(key, area)`             | Handle mouse events (click/drag/up) with full selection support (requires `mouse` feature) |
 
 To define your own key mappings, simply call the above methods in your code instead of `TextArea::input()` method.
 
@@ -811,6 +849,389 @@ loop {
 ```
 
 See [`split` example](./examples/split.rs) and [`editor` example](./examples/editor.rs) for working example.
+
+## Integration Guide for Ratatui-Based Editors
+
+This section provides comprehensive guidance for integrating `tui-textarea` into your ratatui-based text editor application with full feature support.
+
+### Complete Feature Setup
+
+For a fully-featured text editor, enable all relevant features in your `Cargo.toml`:
+
+```toml
+[dependencies]
+ratatui = "0.28"
+crossterm = "0.28"
+tui-textarea = { version = "*", features = ["search", "wrap", "mouse"] }
+```
+
+### Complete Application Setup
+
+Here's a complete example showing how to set up a text editor with all major features:
+
+```rust,ignore
+use crossterm::{
+    event::{self, Event, KeyCode, MouseEventKind, EnableMouseCapture, DisableMouseCapture},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::{
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Style},
+    widgets::{Block, Borders},
+    Terminal,
+};
+use std::io;
+use tui_textarea::{TextArea, Key};
+
+fn main() -> io::Result<()> {
+    // Setup terminal
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    // Create and configure textarea
+    let mut textarea = setup_textarea();
+    
+    // Main event loop
+    let result = run_app(&mut terminal, &mut textarea);
+
+    // Cleanup
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
+
+    result
+}
+
+fn setup_textarea() -> TextArea<'static> {
+    let mut textarea = TextArea::default();
+    
+    // Configure appearance
+    textarea.set_block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("My Editor")
+    );
+    
+    // Enable line numbers with styling
+    textarea.set_line_number_style(Style::default().fg(Color::DarkGray));
+    
+    // Configure cursor line highlighting
+    textarea.set_cursor_line_style(Style::default().bg(Color::Rgb(40, 40, 40)));
+    
+    // Set selection style for better visibility
+    textarea.set_selection_style(Style::default().bg(Color::Blue));
+    
+    // Enable text wrapping
+    textarea.set_wrap(true);
+    
+    // Configure tab width
+    textarea.set_tab_length(4);
+    
+    // Set up search highlighting
+    textarea.set_search_style(Style::default().bg(Color::Yellow).fg(Color::Black));
+    
+    textarea
+}
+
+fn run_app<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    textarea: &mut TextArea,
+) -> io::Result<()> {
+    loop {
+        // Draw the interface
+        terminal.draw(|f| {
+            let area = f.area();
+            f.render_widget(&*textarea, area);
+        })?;
+
+        // Handle events
+        match event::read()? {
+            Event::Key(key) => {
+                // Handle exit condition
+                if key.code == KeyCode::Esc {
+                    break;
+                }
+                
+                // Handle special editor commands
+                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                    match key.code {
+                        KeyCode::Char('s') => {
+                            // Save file logic here
+                            continue;
+                        }
+                        KeyCode::Char('f') => {
+                            // Start search mode
+                            start_search_mode(textarea);
+                            continue;
+                        }
+                        KeyCode::Char('w') => {
+                            // Toggle wrapping
+                            textarea.set_wrap(!textarea.wrap_enabled());
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+                
+                // Pass input to textarea
+                textarea.input(key);
+            }
+            Event::Mouse(mouse) => {
+                handle_mouse_event(textarea, mouse, terminal.size()?.into())?;
+            }
+            Event::Resize(_, _) => {
+                // Terminal was resized, redraw on next iteration
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn handle_mouse_event(
+    textarea: &mut TextArea,
+    mouse: crossterm::event::MouseEvent,
+    terminal_area: Rect,
+) -> io::Result<()> {
+    let mouse_key = match mouse.kind {
+        MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+            Some(Key::MouseClick(mouse.column, mouse.row))
+        }
+        MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+            Some(Key::MouseDrag(mouse.column, mouse.row))
+        }
+        MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
+            Some(Key::MouseUp(mouse.column, mouse.row))
+        }
+        MouseEventKind::ScrollDown => {
+            textarea.scroll((1, 0));
+            None
+        }
+        MouseEventKind::ScrollUp => {
+            textarea.scroll((-1, 0));
+            None
+        }
+        _ => {
+            // Handle other mouse events through normal input
+            textarea.input(mouse);
+            None
+        }
+    };
+
+    if let Some(key) = mouse_key {
+        // Use the full terminal area as widget area for this example
+        textarea.handle_mouse_event(key, terminal_area);
+    }
+    
+    Ok(())
+}
+
+fn start_search_mode(textarea: &mut TextArea) {
+    // Example search implementation
+    // In a real application, you'd want a proper search UI
+    let pattern = "example"; // Get from user input
+    if let Err(e) = textarea.set_search_pattern(pattern) {
+        eprintln!("Invalid search pattern: {}", e);
+    } else {
+        textarea.search_forward(false);
+    }
+}
+```
+
+### Key Integration Points
+
+#### 1. Mouse Event Handling
+
+The most important integration point is proper mouse event handling:
+
+```rust,ignore
+fn handle_mouse_events(textarea: &mut TextArea, mouse: MouseEvent, widget_area: Rect) {
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            textarea.handle_mouse_event(Key::MouseClick(mouse.column, mouse.row), widget_area);
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            textarea.handle_mouse_event(Key::MouseDrag(mouse.column, mouse.row), widget_area);
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            textarea.handle_mouse_event(Key::MouseUp(mouse.column, mouse.row), widget_area);
+        }
+        _ => {
+            // Handle scrolling and other mouse events
+            textarea.input(mouse);
+        }
+    }
+}
+```
+
+#### 2. Layout Management
+
+When using complex layouts, ensure the textarea receives the correct widget area:
+
+```rust,ignore
+fn draw_editor_layout<B: Backend>(f: &mut Frame<B>, textarea: &TextArea) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Status bar
+            Constraint::Min(0),     // Text area
+            Constraint::Length(1),  // Command line
+        ])
+        .split(f.area());
+
+    // Render status bar
+    let status = Block::default().title("Status").borders(Borders::ALL);
+    f.render_widget(status, chunks[0]);
+
+    // Render textarea - use chunks[1] for mouse event handling
+    f.render_widget(&*textarea, chunks[1]);
+    
+    // Store chunks[1] for mouse event handling
+    // You'll need this Rect for textarea.handle_mouse_event()
+}
+```
+
+#### 3. Configuration Best Practices
+
+Configure your textarea for optimal editing experience:
+
+```rust,ignore
+fn configure_textarea_for_editing(textarea: &mut TextArea) {
+    // Visual configuration
+    textarea.set_line_number_style(Style::default().fg(Color::Rgb(100, 100, 100)));
+    textarea.set_cursor_line_style(Style::default().bg(Color::Rgb(50, 50, 50)));
+    textarea.set_selection_style(Style::default().bg(Color::Blue).fg(Color::White));
+    textarea.set_search_style(Style::default().bg(Color::Yellow).fg(Color::Black));
+    
+    // Editor behavior
+    textarea.set_tab_length(4);
+    textarea.set_wrap(true);  // Enable for long line handling
+    textarea.set_max_histories(1000);  // Generous undo history
+    
+    // Add borders for better visual separation
+    textarea.set_block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Editor")
+            .border_style(Style::default().fg(Color::White))
+    );
+}
+```
+
+#### 4. Text Wrapping and Mouse Integration
+
+When using text wrapping, mouse events work automatically:
+
+```rust,ignore
+// Enable wrapping
+textarea.set_wrap(true);
+
+// Optional: Set custom wrap width
+textarea.set_wrap_width(Some(80));
+
+// Mouse events automatically account for text wrapping
+// No additional configuration needed
+```
+
+#### 5. Search Integration
+
+Implement search functionality:
+
+```rust,ignore
+fn implement_search(textarea: &mut TextArea, query: &str) -> Result<(), regex::Error> {
+    // Set search pattern
+    textarea.set_search_pattern(query)?;
+    
+    // Move to first match
+    textarea.search_forward(false);
+    
+    Ok(())
+}
+
+// In your key handler:
+match key.code {
+    KeyCode::F(3) => textarea.search_forward(false),  // Find next
+    KeyCode::F(2) => textarea.search_back(false),     // Find previous
+    KeyCode::Esc => textarea.set_search_pattern("").unwrap(),  // Clear search
+    _ => {}
+}
+```
+
+### Common Patterns
+
+#### Multi-file Editor
+
+```rust,ignore
+struct Editor {
+    files: Vec<TextArea<'static>>,
+    current_file: usize,
+}
+
+impl Editor {
+    fn handle_input(&mut self, input: crossterm::event::Event) {
+        match input {
+            Event::Key(key) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                match key.code {
+                    KeyCode::Tab => self.next_file(),
+                    KeyCode::Char('w') => self.close_file(),
+                    _ => self.current_textarea().input(key),
+                }
+            }
+            _ => self.current_textarea().input(input),
+        }
+    }
+    
+    fn current_textarea(&mut self) -> &mut TextArea<'static> {
+        &mut self.files[self.current_file]
+    }
+}
+```
+
+#### Status Bar Integration
+
+```rust,ignore
+fn get_editor_status(textarea: &TextArea) -> String {
+    let cursor = textarea.cursor();
+    let lines = textarea.lines().len();
+    let selection = textarea.selection_range();
+    
+    match selection {
+        Some((start, end)) => {
+            format!("Line {}/{} | Selection: {}:{} to {}:{}", 
+                   cursor.0 + 1, lines, 
+                   start.row + 1, start.col + 1,
+                   end.row + 1, end.col + 1)
+        }
+        None => {
+            format!("Line {}/{} | Col {}", cursor.0 + 1, lines, cursor.1 + 1)
+        }
+    }
+}
+```
+
+### Performance Considerations
+
+- Enable only the features you need to minimize dependencies
+- For very large files, consider implementing lazy loading
+- Use `textarea.set_max_histories()` to limit memory usage for undo/redo
+- The wrapped selection highlighting is optimized and should perform well with reasonable file sizes
+
+### Troubleshooting
+
+**Mouse events not working**: Ensure you've enabled `EnableMouseCapture` and are using the correct widget area bounds.
+
+**Wrapped selection not highlighting**: Make sure both `wrap` and `mouse` features are enabled in your `Cargo.toml`.
+
+**Selection disappears on terminal resize**: This is normal behavior; the selection is cleared to avoid invalid ranges.
 
 ### Serialization/Deserialization support
 

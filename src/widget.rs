@@ -2,6 +2,7 @@ use crate::ratatui::buffer::Buffer;
 use crate::ratatui::layout::Rect;
 use crate::ratatui::text::Span;
 use crate::ratatui::widgets::Widget;
+use crate::ratatui::style::Style;
 use crate::textarea::TextArea;
 use crate::util::num_digits;
 #[cfg(feature = "ratatui")]
@@ -165,114 +166,138 @@ impl<'a> TextArea<'a> {
     fn text_lines(&'a self, top_row: usize, height: usize, area_width: u16) -> Vec<Line<'a>> {
         let lines_len = self.lines().len();
         let lnum_len = num_digits(lines_len);
-        let bottom_row = cmp::min(top_row + height, lines_len);
-        let mut lines = Vec::new();
-        
+        let line_number_style = self.line_number_style();
+        let show_line_numbers = line_number_style.is_some();
+
         #[cfg(feature = "wrap")]
         let wrap_enabled = self.wrap_enabled();
         #[cfg(not(feature = "wrap"))]
         let wrap_enabled = false;
-        
+
         if wrap_enabled {
-            #[cfg(feature = "wrap")]
-            {
-                // Calculate effective wrap width
-                let mut wrap_width = area_width as usize;
-                
-                // Account for line numbers if enabled
-                if self.line_number_style().is_some() {
-                    wrap_width = wrap_width.saturating_sub(lnum_len as usize + 2);
+            return self.render_wrapped_lines(top_row, height, area_width, lnum_len, show_line_numbers, line_number_style);
+        }
+
+        self.render_unwrapped_lines(top_row, height, area_width, lnum_len, show_line_numbers)
+    }
+
+    fn render_wrapped_lines(
+        &'a self,
+        top_row: usize,
+        height: usize,
+        area_width: u16,
+        lnum_len: u8,
+        show_line_numbers: bool,
+        line_number_style: Option<Style>,
+    ) -> Vec<Line<'a>> {
+        #[cfg(not(feature = "wrap"))]
+        {
+            Vec::new()
+        }
+
+        #[cfg(feature = "wrap")]
+        {
+            use crate::ratatui::text::{Line, Span};
+
+            const LNUM_PADDING: usize = 2;
+            let mut wrap_width = area_width as usize;
+
+            if show_line_numbers {
+                wrap_width = wrap_width.saturating_sub(lnum_len as usize + LNUM_PADDING);
+            }
+
+            if let Some(custom_width) = self.wrap_width() {
+                wrap_width = custom_width;
+            }
+
+            wrap_width = wrap_width.max(1);
+
+            let mut lines = Vec::new();
+            let mut display_row = 0;
+
+            for (logical_row, line_text) in self.lines().iter().enumerate() {
+                let wrapped_lines = textwrap::wrap(line_text, wrap_width);
+
+                if display_row + wrapped_lines.len() <= top_row {
+                    // Skip this line entirely
+                    display_row += wrapped_lines.len();
+                    continue;
                 }
-                
-                // Use custom wrap width if set
-                if let Some(custom_width) = self.wrap_width() {
-                    wrap_width = custom_width;
-                }
-                
-                // Ensure minimum width
-                wrap_width = wrap_width.max(1);
-                
-                let mut display_row = 0;
-                for (logical_row, line_text) in self.lines().iter().enumerate() {
-                    if logical_row < top_row {
-                        // Skip lines before the viewport, but count wrapped lines
-                        let wrapped_count = textwrap::wrap(line_text, wrap_width).len();
-                        display_row += wrapped_count;
-                        continue;
-                    }
-                    
+
+                for (wrap_index, wrapped_line) in wrapped_lines.iter().enumerate() {
                     if display_row >= top_row + height {
                         break;
                     }
-                    
-                    // Wrap the line
-                    let wrapped_lines = textwrap::wrap(line_text, wrap_width);
-                    
-                    for (wrap_index, wrapped_line) in wrapped_lines.iter().enumerate() {
-                        if display_row >= top_row && display_row < top_row + height {
-                            // For wrapped lines, create Line directly with owned content
-                            use crate::ratatui::text::Span;
-                            
-                            let mut spans = Vec::new();
-                            
-                            // Add line number for first wrap segment only
-                            if wrap_index == 0 && self.line_number_style().is_some() {
-                                let lnum_style = self.line_number_style().unwrap();
+
+                    if display_row >= top_row {
+                        let mut spans = Vec::new();
+
+                        if show_line_numbers {
+                            if wrap_index == 0 {
+                                let style = line_number_style.expect("checked already");
                                 let lnum = format!(" {:>width$} ", logical_row + 1, width = lnum_len as usize);
-                                spans.push(Span::styled(lnum, lnum_style));
-                            } else if self.line_number_style().is_some() {
-                                // Add padding for wrapped line segments
-                                let padding = " ".repeat(lnum_len as usize + 2);
+                                spans.push(Span::styled(lnum, style));
+                            } else {
+                                let padding = " ".repeat(lnum_len as usize + LNUM_PADDING);
                                 spans.push(Span::raw(padding));
                             }
-                            
-                            // Add the wrapped line content
-                            spans.push(Span::styled(wrapped_line.to_string(), self.style()));
-                            
-                            lines.push(Line::from(spans));
                         }
-                        display_row += 1;
-                        
-                        if display_row >= top_row + height {
-                            break;
-                        }
+
+                        spans.push(Span::styled(wrapped_line.to_string(), self.style()));
+                        lines.push(Line::from(spans));
                     }
+
+                    display_row += 1;
+                }
+
+                if display_row >= top_row + height {
+                    break;
                 }
             }
-        } else {
-            // Non-wrapping logic with horizontal scrolling support
-            let (_, col_left) = self.viewport.scroll_top();
-            let mut viewport_width = area_width;
-            
-            // Account for line numbers if enabled
-            if self.line_number_style().is_some() {
-                viewport_width = viewport_width.saturating_sub((lnum_len + 2) as u16);
-            }
-            
-            for (i, line) in self.lines()[top_row..bottom_row].iter().enumerate() {
-                // Apply horizontal clipping if there's horizontal scroll
-                if col_left > 0 || line.chars().count() > viewport_width as usize {
-                    let (start_char, end_char, _offset) = calculate_horizontal_range(
-                        line,
-                        col_left,
-                        viewport_width,
-                        self.tab_length(),
-                    );
-                    
-                    if start_char < line.len() {
-                        let clipped_line = &line[start_char..end_char];
-                        lines.push(self.line_spans(clipped_line, top_row + i, lnum_len));
-                    } else {
-                        // Line is entirely before the horizontal viewport
-                        lines.push(self.line_spans("", top_row + i, lnum_len));
-                    }
-                } else {
-                    // No horizontal clipping needed
-                    lines.push(self.line_spans(line.as_str(), top_row + i, lnum_len));
-                }
-            }
+
+            lines
         }
-        
+    }
+
+    fn render_unwrapped_lines(
+        &'a self,
+        top_row: usize,
+        height: usize,
+        area_width: u16,
+        lnum_len: u8,
+        show_line_numbers: bool,
+    ) -> Vec<Line<'a>> {
+        let lines_len = self.lines().len();
+        let bottom_row = top_row.saturating_add(height).min(lines_len);
+        let mut lines = Vec::new();
+
+        let (_, col_left) = self.viewport.scroll_top();
+        let mut viewport_width = area_width;
+
+        if show_line_numbers {
+            viewport_width = viewport_width.saturating_sub((lnum_len + 2) as u16);
+        }
+
+        for (i, line) in self.lines()[top_row..bottom_row].iter().enumerate() {
+            let rendered_line = if col_left > 0 || line.chars().count() > viewport_width as usize {
+                let (start, end, _) = calculate_horizontal_range(
+                    line,
+                    col_left,
+                    viewport_width,
+                    self.tab_length(),
+                );
+                if start < line.len() {
+                    self.line_spans(&line[start..end], top_row + i, lnum_len)
+                } else {
+                    self.line_spans("", top_row + i, lnum_len)
+                }
+            } else {
+                self.line_spans(line.as_str(), top_row + i, lnum_len)
+            };
+
+            lines.push(rendered_line);
+        }
+
         lines
     }
 
@@ -353,7 +378,6 @@ impl<'a> TextArea<'a> {
             aligned_line.render(line_area, buf);
         }
     }
-
 }
 
 impl Widget for &TextArea<'_> {

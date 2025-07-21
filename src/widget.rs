@@ -9,6 +9,9 @@ use crate::util::num_digits;
 use ratatui::text::Line;
 use std::cmp;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "wrap")]
+use textwrap::Options;
+
 #[cfg(feature = "tuirs")]
 use tui::text::Spans as Line;
 
@@ -211,12 +214,15 @@ impl<'a> TextArea<'a> {
             }
 
             wrap_width = wrap_width.max(1);
+            
+            // Create Options and set preserve_trailing_space
+            let options = Options::new(wrap_width).preserve_trailing_space(true);
 
             let mut lines = Vec::new();
             let mut display_row = 0;
 
             for (logical_row, line_text) in self.lines().iter().enumerate() {
-                let wrapped_lines = textwrap::wrap(line_text, wrap_width);
+                let wrapped_lines = textwrap::wrap(line_text, &options);
 
                 if display_row + wrapped_lines.len() <= top_row {
                     // Skip this line entirely

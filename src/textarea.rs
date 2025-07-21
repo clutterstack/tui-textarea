@@ -15,6 +15,9 @@ use crate::word::{find_word_exclusive_end_forward, find_word_start_backward};
 use ratatui::text::Line;
 use std::cmp::Ordering;
 use std::fmt;
+#[cfg(feature = "wrap")]
+use textwrap::Options;
+
 #[cfg(feature = "tuirs")]
 use tui::text::Spans as Line;
 use unicode_width::UnicodeWidthChar as _;
@@ -2462,17 +2465,20 @@ impl<'a> TextArea<'a> {
         let wrap_width = self.calculate_effective_wrap_width(area_width);
         let lnum_width = self.calculate_line_number_width();
         let mut current_display_line = 0;
+        // Create Options and set preserve_trailing_space
+        let options = Options::new(wrap_width).preserve_trailing_space(true);
+
         
         // Walk through logical lines to find which one contains our target display line
         for (logical_row, line_text) in self.lines().iter().enumerate() {
             if logical_row < top_row {
                 // Skip lines before viewport, but count their wrapped segments
-                let wrapped_count = textwrap::wrap(line_text, wrap_width).len();
+                let wrapped_count = textwrap::wrap(line_text, &options).len();
                 current_display_line += wrapped_count;
                 continue;
             }
             
-            let wrapped_lines = textwrap::wrap(line_text, wrap_width);
+            let wrapped_lines = textwrap::wrap(line_text, &options);
             
             // Check if our target display line is within this logical line's wrapped segments
             if display_line_index < current_display_line + wrapped_lines.len() {
@@ -2619,6 +2625,10 @@ impl<'a> TextArea<'a> {
         let wrap_width = self.calculate_effective_wrap_width(area_width);
         let lnum_width = self.calculate_line_number_width();
         let mut current_display_line = 0;
+
+        // Create Options and set preserve_trailing_space
+        let options = Options::new(wrap_width).preserve_trailing_space(true);
+
         
         // Count display lines before the cursor's logical row
         for row in top_row..logical_row {
@@ -2630,7 +2640,7 @@ impl<'a> TextArea<'a> {
             if line.is_empty() {
                 current_display_line += 1;
             } else {
-                let wrapped_lines_count = textwrap::wrap(line, wrap_width).len();
+                let wrapped_lines_count = textwrap::wrap(line, &options).len();
                 current_display_line += wrapped_lines_count;
             }
         }
@@ -2649,7 +2659,7 @@ impl<'a> TextArea<'a> {
             }
             
             // Use textwrap to get the wrapped segments, but track original positions carefully
-            let wrapped_lines = textwrap::wrap(line, wrap_width);
+            let wrapped_lines = textwrap::wrap(line, &options);
             let line_chars: Vec<char> = line.chars().collect();
             let logical_col = logical_col.min(line_chars.len());
             

@@ -2218,6 +2218,83 @@ impl<'a> TextArea<'a> {
     /// let handled = textarea.handle_mouse_click(5, 1, widget_area);
     /// // handled will be true if the click was within the text content
     /// ```
+
+    // ===== Helper functions for coordinate mapping =====
+
+    /// Calculate the visual width needed for line numbers including padding
+    fn calculate_line_number_width(&self) -> u16 {
+        if self.line_number_style().is_some() {
+            crate::util::num_digits(self.lines().len()) as u16 + 2
+        } else {
+            0
+        }
+    }
+
+    /// Calculate the visual width of a single character, handling tabs and Unicode
+    fn calculate_char_visual_width(&self, ch: char, current_visual_pos: u16) -> u16 {
+        if ch == '\t' {
+            self.tab_len as u16 - (current_visual_pos % self.tab_len as u16)
+        } else {
+            unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) as u16
+        }
+    }
+
+    /// Calculate the effective wrap width considering line numbers and custom wrap width
+    #[cfg(feature = "wrap")]
+    fn calculate_effective_wrap_width(&self, area_width: u16) -> usize {
+        let mut wrap_width = area_width as usize;
+        
+        // Subtract line number width if enabled
+        if self.line_number_style().is_some() {
+            let lnum_len = crate::util::num_digits(self.lines().len());
+            wrap_width = wrap_width.saturating_sub((lnum_len + 2) as usize);
+        }
+        
+        // Use custom wrap width if set
+        if let Some(custom_width) = self.wrap_width() {
+            wrap_width = custom_width;
+        }
+        
+        wrap_width.max(1) // Ensure minimum width of 1
+    }
+
+    /// Convert logical column position to visual column position within a line
+    /// accounting for tab expansion and Unicode width
+    fn logical_to_visual_column(&self, line: &str, logical_col: usize) -> u16 {
+        let mut visual_pos = 0;
+        
+        for (char_idx, ch) in line.char_indices() {
+            if line[..char_idx].chars().count() >= logical_col {
+                break;
+            }
+            visual_pos += self.calculate_char_visual_width(ch, visual_pos);
+        }
+        
+        visual_pos
+    }
+
+    /// Convert visual column position to logical column position within a line
+    /// accounting for tab expansion and Unicode width
+    fn visual_to_logical_column(&self, line: &str, target_visual_col: u16) -> usize {
+        let mut logical_pos = 0;
+        let mut visual_pos = 0;
+        
+        for ch in line.chars() {
+            let char_width = self.calculate_char_visual_width(ch, visual_pos);
+            
+            if visual_pos + char_width > target_visual_col {
+                break;
+            }
+            
+            visual_pos += char_width;
+            logical_pos += 1;
+        }
+        
+        logical_pos
+    }
+
+    // ===== Mouse handling methods =====
+
     #[cfg(feature = "mouse")]
     pub fn handle_mouse_click(&mut self, screen_x: u16, screen_y: u16, widget_area: crate::ratatui::layout::Rect) -> bool {
         // Calculate the actual text area, accounting for block borders if present
@@ -2282,61 +2359,25 @@ impl<'a> TextArea<'a> {
             return None;
         }
         
-        let line = &self.lines()[logical_row];
-        let mut char_offset = 0;
-        let mut screen_offset = 0;
-        
         // Account for line numbers if enabled
-        if let Some(_) = self.line_number_style() {
-            let lnum_len = crate::util::num_digits(self.lines().len()) as u16 + 2;
-            if rel_x < lnum_len {
-                // Click was on line number area, position at start of line
-                return Some((logical_row, 0));
-            }
-            screen_offset = lnum_len;
+        let lnum_width = self.calculate_line_number_width();
+        if lnum_width > 0 && rel_x < lnum_width {
+            // Click was on line number area, position at start of line
+            return Some((logical_row, 0));
         }
         
-        let target_x = rel_x.saturating_sub(screen_offset);
+        let line = &self.lines()[logical_row];
+        let target_visual_col = rel_x.saturating_sub(lnum_width);
+        let logical_col = self.visual_to_logical_column(line, target_visual_col);
         
-        // Walk through characters to find the click position
-        for ch in line.chars() {
-            if screen_offset >= rel_x {
-                break;
-            }
-            
-            let char_width = if ch == '\t' {
-                self.tab_len as u16 - (screen_offset % self.tab_len as u16)
-            } else {
-                unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) as u16
-            };
-            
-            if screen_offset + char_width > target_x {
-                break;
-            }
-            
-            screen_offset += char_width;
-            char_offset += 1;
-        }
-        
-        Some((logical_row, char_offset))
+        Some((logical_row, logical_col))
     }
 
     /// Handle coordinate mapping for wrapped text (more complex case)
     #[cfg(all(feature = "mouse", feature = "wrap"))]
     fn screen_to_logical_position_wrapped(&self, rel_x: u16, display_line_index: usize, area_width: u16, top_row: usize) -> Option<(usize, usize)> {
-        let lines_len = self.lines().len();
-        let lnum_len = crate::util::num_digits(lines_len);
-        
-        // Calculate effective wrap width
-        let mut wrap_width = area_width as usize;
-        if self.line_number_style().is_some() {
-            wrap_width = wrap_width.saturating_sub(lnum_len as usize + 2);
-        }
-        if let Some(custom_width) = self.wrap_width() {
-            wrap_width = custom_width;
-        }
-        wrap_width = wrap_width.max(1);
-        
+        let wrap_width = self.calculate_effective_wrap_width(area_width);
+        let lnum_width = self.calculate_line_number_width();
         let mut current_display_line = 0;
         
         // Walk through logical lines to find which one contains our target display line
@@ -2355,7 +2396,13 @@ impl<'a> TextArea<'a> {
                 let wrap_segment_index = display_line_index - current_display_line;
                 let wrapped_segment = &wrapped_lines[wrap_segment_index];
                 
-                // Calculate character offset within the original line
+                // Handle line number area clicks
+                let effective_lnum_width = if wrap_segment_index == 0 { lnum_width } else { lnum_width };
+                if effective_lnum_width > 0 && rel_x < effective_lnum_width {
+                    return Some((logical_row, 0));
+                }
+                
+                // Calculate character offset within the original line for previous segments
                 let mut char_offset = 0;
                 for (i, segment) in wrapped_lines.iter().enumerate() {
                     if i == wrap_segment_index {
@@ -2364,47 +2411,155 @@ impl<'a> TextArea<'a> {
                     char_offset += segment.chars().count();
                 }
                 
-                // Now find the position within this wrapped segment
-                let mut screen_offset = 0;
+                // Find position within this wrapped segment
+                let target_visual_col = rel_x.saturating_sub(effective_lnum_width);
+                let segment_logical_col = self.visual_to_logical_column(wrapped_segment, target_visual_col);
                 
-                // Account for line numbers (only on first wrap segment)
-                if wrap_segment_index == 0 && self.line_number_style().is_some() {
-                    let lnum_len = lnum_len as u16 + 2;
-                    if rel_x < lnum_len {
-                        return Some((logical_row, 0));
-                    }
-                    screen_offset = lnum_len;
-                } else if self.line_number_style().is_some() {
-                    // Add padding for continuation lines
-                    screen_offset = lnum_len as u16 + 2;
-                }
-                
-                let target_x = rel_x.saturating_sub(screen_offset);
-                let mut segment_char_offset = 0;
-                
-                for ch in wrapped_segment.chars() {
-                    if screen_offset >= rel_x {
-                        break;
-                    }
-                    
-                    let char_width = if ch == '\t' {
-                        self.tab_len as u16 - (screen_offset % self.tab_len as u16)
-                    } else {
-                        unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) as u16
-                    };
-                    
-                    if screen_offset + char_width > target_x {
-                        break;
-                    }
-                    
-                    screen_offset += char_width;
-                    segment_char_offset += 1;
-                }
-                
-                return Some((logical_row, char_offset + segment_char_offset));
+                return Some((logical_row, char_offset + segment_logical_col));
             }
             
             current_display_line += wrapped_lines.len();
+        }
+        
+        None
+    }
+
+    /// Convert logical cursor position to screen coordinates relative to the text area.
+    /// Returns `(screen_x, screen_y)` coordinates where the cursor should be displayed
+    /// accounting for text wrapping, line numbers, and scrolling.
+    /// 
+    /// This is the inverse of `screen_to_logical_position` and is useful for positioning
+    /// the terminal cursor when rendering the textarea.
+    /// 
+    /// # Arguments
+    /// * `area_width` - The width of the text area (excluding borders)
+    /// * `area_height` - The height of the text area (excluding borders)
+    /// 
+    /// # Returns
+    /// * `Some((x, y))` - Screen coordinates relative to text area, or `None` if cursor is not visible
+    /// 
+    /// # Example
+    /// ```
+    /// # use ratatui::layout::Rect;
+    /// use tui_textarea::TextArea;
+    /// 
+    /// let mut textarea = TextArea::from(["hello world", "second line"]);
+    /// textarea.move_cursor(tui_textarea::CursorMove::Jump(1, 3));
+    /// 
+    /// if let Some((x, y)) = textarea.logical_to_screen_position(50, 10) {
+    ///     println!("Cursor should be displayed at screen position ({}, {})", x, y);
+    /// }
+    /// ```
+    #[cfg(feature = "mouse")]
+    pub fn logical_to_screen_position(&self, area_width: u16, area_height: u16) -> Option<(u16, u16)> {
+        let (logical_row, logical_col) = self.cursor();
+        let (top_row, left_col) = self.viewport.scroll_top();
+        
+        // Check if cursor is outside viewable area vertically
+        if logical_row < top_row as usize {
+            return None; // Cursor is above visible area
+        }
+        
+        #[cfg(feature = "wrap")]
+        let wrap_enabled = self.wrap_enabled();
+        #[cfg(not(feature = "wrap"))]
+        let wrap_enabled = false;
+        
+        if wrap_enabled {
+            self.logical_to_screen_position_wrapped(logical_row, logical_col, area_width, area_height, top_row as usize)
+        } else {
+            self.logical_to_screen_position_unwrapped(logical_row, logical_col, area_width, area_height, top_row as usize, left_col)
+        }
+    }
+
+    /// Handle coordinate mapping for unwrapped text (simpler case)
+    #[cfg(feature = "mouse")]
+    fn logical_to_screen_position_unwrapped(&self, logical_row: usize, logical_col: usize, area_width: u16, area_height: u16, top_row: usize, left_col: u16) -> Option<(u16, u16)> {
+        // Check if cursor row is within visible area
+        let screen_y = logical_row.checked_sub(top_row)?;
+        if screen_y >= area_height as usize {
+            return None; // Cursor is below visible area
+        }
+        
+        // Get line and calculate visual position
+        if logical_row >= self.lines().len() {
+            return None;
+        }
+        
+        let line = &self.lines()[logical_row];
+        let visual_col = self.logical_to_visual_column(line, logical_col);
+        
+        // Apply horizontal scrolling
+        let scrolled_visual_col = visual_col.saturating_sub(left_col);
+        
+        // Add line number width
+        let lnum_width = self.calculate_line_number_width();
+        let screen_x = lnum_width + scrolled_visual_col;
+        
+        // Check if cursor is within horizontal bounds
+        if screen_x >= area_width {
+            return None; // Cursor is off-screen horizontally
+        }
+        
+        Some((screen_x, screen_y as u16))
+    }
+
+    /// Handle coordinate mapping for wrapped text (more complex case)
+    #[cfg(all(feature = "mouse", feature = "wrap"))]
+    fn logical_to_screen_position_wrapped(&self, logical_row: usize, logical_col: usize, area_width: u16, area_height: u16, top_row: usize) -> Option<(u16, u16)> {
+        let wrap_width = self.calculate_effective_wrap_width(area_width);
+        let lnum_width = self.calculate_line_number_width();
+        let mut current_display_line = 0;
+        
+        // Count display lines before the cursor's logical row
+        for row in top_row..logical_row {
+            if row >= self.lines().len() {
+                break;
+            }
+            
+            let line = &self.lines()[row];
+            if line.is_empty() {
+                current_display_line += 1;
+            } else {
+                let wrapped_lines_count = textwrap::wrap(line, wrap_width).len();
+                current_display_line += wrapped_lines_count;
+            }
+        }
+        
+        // Now handle the cursor's logical row
+        if logical_row < self.lines().len() {
+            let line = &self.lines()[logical_row];
+            
+            if line.is_empty() {
+                // Empty line
+                let screen_y = current_display_line;
+                if screen_y >= area_height as usize {
+                    return None; // Below visible area
+                }
+                return Some((lnum_width, screen_y as u16));
+            }
+            
+            // Find which wrapped segment contains the cursor
+            let segment_index = logical_col / wrap_width;
+            let col_in_segment = logical_col % wrap_width;
+            
+            let screen_y = current_display_line + segment_index;
+            if screen_y >= area_height as usize {
+                return None; // Below visible area
+            }
+            
+            // Calculate screen x position
+            let screen_x = if segment_index == 0 {
+                lnum_width + col_in_segment as u16
+            } else {
+                lnum_width + col_in_segment as u16 // Padding for wrapped segments
+            };
+            
+            if screen_x >= area_width {
+                return None; // Off-screen horizontally
+            }
+            
+            return Some((screen_x, screen_y as u16));
         }
         
         None

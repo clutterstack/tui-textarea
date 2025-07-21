@@ -1556,16 +1556,99 @@ impl<'a> TextArea<'a> {
     }
 
     fn move_cursor_with_shift(&mut self, m: CursorMove, shift: bool) {
-        if let Some(cursor) = m.next_cursor(self.cursor, &self.lines, &self.viewport) {
-            if shift {
-                if self.selection_start.is_none() {
-                    self.start_selection();
+        use crate::cursor::CursorMove;
+        
+        // Handle visual movement for wrapped text
+        match m {
+            CursorMove::VisualUp => {
+                #[cfg(feature = "wrap")]
+                if self.wrap_enabled() {
+                    if let Some(cursor) = self.visual_move_up() {
+                        self.handle_cursor_change(cursor, shift);
+                        return;
+                    }
+                }
+                // Fall back to logical movement
+                self.move_cursor_with_shift(CursorMove::Up, shift);
+            }
+            CursorMove::VisualDown => {
+                #[cfg(feature = "wrap")]
+                if self.wrap_enabled() {
+                    if let Some(cursor) = self.visual_move_down() {
+                        self.handle_cursor_change(cursor, shift);
+                        return;
+                    }
+                }
+                // Fall back to logical movement
+                self.move_cursor_with_shift(CursorMove::Down, shift);
+            }
+            _ => {
+                // For all other movements, use the existing logic
+                if let Some(cursor) = m.next_cursor(self.cursor, &self.lines, &self.viewport) {
+                    self.handle_cursor_change(cursor, shift);
+                }
+            }
+        }
+    }
+    
+    fn handle_cursor_change(&mut self, cursor: (usize, usize), shift: bool) {
+        if shift {
+            if self.selection_start.is_none() {
+                self.start_selection();
+            }
+        } else {
+            self.cancel_selection();
+        }
+        self.cursor = cursor;
+    }
+    
+    #[cfg(feature = "wrap")]
+    fn visual_move_up(&self) -> Option<(usize, usize)> {
+        let (_, _, area_width, area_height) = self.viewport.rect();
+        
+        // Get current visual position
+        if let Some((visual_col, visual_row)) = self.logical_to_screen_position(area_width, area_height) {
+            if visual_row > 0 {
+                // Try to move to the same visual column on the previous visual row
+                let target_visual_row = visual_row - 1;
+                
+                // Use screen_to_logical_position to convert back
+                if let Some((target_logical_row, target_logical_col)) = 
+                    self.screen_to_logical_position(visual_col, target_visual_row, area_width, area_height) {
+                    return Some((target_logical_row, target_logical_col));
                 }
             } else {
-                self.cancel_selection();
+                // Already at top, move to beginning of first line
+                return Some((0, 0));
             }
-            self.cursor = cursor;
         }
+        
+        // Fallback to logical movement
+        None
+    }
+    
+    #[cfg(feature = "wrap")]
+    fn visual_move_down(&self) -> Option<(usize, usize)> {
+        let (_, _, area_width, area_height) = self.viewport.rect();
+        
+        // Get current visual position
+        if let Some((visual_col, visual_row)) = self.logical_to_screen_position(area_width, area_height) {
+            // Try to move to the same visual column on the next visual row
+            let target_visual_row = visual_row + 1;
+            
+            // Use screen_to_logical_position to convert back
+            if let Some((target_logical_row, target_logical_col)) = 
+                self.screen_to_logical_position(visual_col, target_visual_row, area_width, area_height) {
+                return Some((target_logical_row, target_logical_col));
+            } else {
+                // We've hit the bottom, move to end of last line
+                let last_row = self.lines.len().saturating_sub(1);
+                return Some((last_row, self.lines[last_row].chars().count()));
+            }
+        }
+        
+        // Fallback to logical movement
+        None
     }
 
     /// Undo the last modification. This method returns if the undo modified text contents or not in the textarea.
@@ -2394,28 +2477,53 @@ impl<'a> TextArea<'a> {
             // Check if our target display line is within this logical line's wrapped segments
             if display_line_index < current_display_line + wrapped_lines.len() {
                 let wrap_segment_index = display_line_index - current_display_line;
-                let wrapped_segment = &wrapped_lines[wrap_segment_index];
                 
                 // Handle line number area clicks
-                let effective_lnum_width = if wrap_segment_index == 0 { lnum_width } else { lnum_width };
-                if effective_lnum_width > 0 && rel_x < effective_lnum_width {
+                if lnum_width > 0 && rel_x < lnum_width {
                     return Some((logical_row, 0));
                 }
                 
-                // Calculate character offset within the original line for previous segments
-                let mut char_offset = 0;
-                for (i, segment) in wrapped_lines.iter().enumerate() {
-                    if i == wrap_segment_index {
-                        break;
+                // Use the same character tracking logic as logical_to_screen_position_wrapped
+                let line_chars: Vec<char> = line_text.chars().collect();
+                let mut original_pos = 0;
+                
+                // Find the character offset for this segment
+                for (seg_idx, seg) in wrapped_lines.iter().enumerate() {
+                    if seg_idx == wrap_segment_index {
+                        // Found our target segment
+                        let target_visual_col = rel_x.saturating_sub(lnum_width);
+                        let segment_text = seg.to_string();
+                        let segment_logical_col = self.visual_to_logical_column(&segment_text, target_visual_col);
+                        
+                        return Some((logical_row, original_pos + segment_logical_col));
                     }
-                    char_offset += segment.chars().count();
+                    
+                    // Move to next segment using the same logic as logical_to_screen_position_wrapped
+                    let segment_text = seg.to_string();
+                    let segment_chars: Vec<char> = segment_text.chars().collect();
+                    
+                    // Find where this segment ends in the original text
+                    let mut segment_end_in_original = original_pos;
+                    let mut segment_char_idx = 0;
+                    
+                    while segment_char_idx < segment_chars.len() && segment_end_in_original < line_chars.len() {
+                        if line_chars[segment_end_in_original] == segment_chars[segment_char_idx] {
+                            segment_char_idx += 1;
+                        }
+                        segment_end_in_original += 1;
+                    }
+                    
+                    original_pos = segment_end_in_original;
+                    
+                    // Skip any whitespace that textwrap removed between segments
+                    while original_pos < line_chars.len() && line_chars[original_pos].is_whitespace() {
+                        if seg_idx < wrapped_lines.len() - 1 {
+                            original_pos += 1;
+                        } else {
+                            break;
+                        }
+                    }
                 }
-                
-                // Find position within this wrapped segment
-                let target_visual_col = rel_x.saturating_sub(effective_lnum_width);
-                let segment_logical_col = self.visual_to_logical_column(wrapped_segment, target_visual_col);
-                
-                return Some((logical_row, char_offset + segment_logical_col));
             }
             
             current_display_line += wrapped_lines.len();
@@ -2423,6 +2531,7 @@ impl<'a> TextArea<'a> {
         
         None
     }
+
 
     /// Convert logical cursor position to screen coordinates relative to the text area.
     /// Returns `(screen_x, screen_y)` coordinates where the cursor should be displayed
@@ -2539,27 +2648,66 @@ impl<'a> TextArea<'a> {
                 return Some((lnum_width, screen_y as u16));
             }
             
-            // Find which wrapped segment contains the cursor
-            let segment_index = logical_col / wrap_width;
-            let col_in_segment = logical_col % wrap_width;
+            // Use textwrap to get the wrapped segments, but track original positions carefully
+            let wrapped_lines = textwrap::wrap(line, wrap_width);
+            let line_chars: Vec<char> = line.chars().collect();
+            let logical_col = logical_col.min(line_chars.len());
             
-            let screen_y = current_display_line + segment_index;
-            if screen_y >= area_height as usize {
-                return None; // Below visible area
+            // Track position in original text
+            let mut original_pos = 0;
+            
+            for (segment_index, wrapped_segment) in wrapped_lines.iter().enumerate() {
+                let segment_text = wrapped_segment.to_string();
+                let segment_chars: Vec<char> = segment_text.chars().collect();
+                
+                // Find where this segment starts in the original text
+                let segment_start_in_original = original_pos;
+                
+                // Find where this segment ends in the original text by searching forward
+                let mut segment_end_in_original = original_pos;
+                let mut segment_char_idx = 0;
+                
+                while segment_char_idx < segment_chars.len() && segment_end_in_original < line_chars.len() {
+                    if line_chars[segment_end_in_original] == segment_chars[segment_char_idx] {
+                        segment_char_idx += 1;
+                    }
+                    segment_end_in_original += 1;
+                }
+                
+                // Check if cursor is within this segment's original range
+                if logical_col >= segment_start_in_original && 
+                   (logical_col < segment_end_in_original || segment_index == wrapped_lines.len() - 1) {
+                    
+                    // Calculate position within the segment
+                    let pos_in_segment = logical_col - segment_start_in_original;
+                    let visual_col_in_segment = self.logical_to_visual_column(&segment_text, pos_in_segment.min(segment_chars.len()));
+                    
+                    let screen_y = current_display_line + segment_index;
+                    if screen_y >= area_height as usize {
+                        return None; // Below visible area
+                    }
+                    
+                    let screen_x = lnum_width + visual_col_in_segment;
+                    if screen_x >= area_width {
+                        return None; // Off-screen horizontally
+                    }
+                    
+                    return Some((screen_x, screen_y as u16));
+                }
+                
+                // Move to the next segment
+                original_pos = segment_end_in_original;
+                
+                // Skip any whitespace that textwrap removed between segments
+                while original_pos < line_chars.len() && line_chars[original_pos].is_whitespace() {
+                    // But only skip if we're not at the last segment
+                    if segment_index < wrapped_lines.len() - 1 {
+                        original_pos += 1;
+                    } else {
+                        break;
+                    }
+                }
             }
-            
-            // Calculate screen x position
-            let screen_x = if segment_index == 0 {
-                lnum_width + col_in_segment as u16
-            } else {
-                lnum_width + col_in_segment as u16 // Padding for wrapped segments
-            };
-            
-            if screen_x >= area_width {
-                return None; // Off-screen horizontally
-            }
-            
-            return Some((screen_x, screen_y as u16));
         }
         
         None

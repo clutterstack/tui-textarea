@@ -75,7 +75,23 @@ impl From<MouseEventKind> for Key {
 impl From<MouseEvent> for Input {
     /// Convert [`crossterm::event::MouseEvent`] into [`Input`].
     fn from(mouse: MouseEvent) -> Self {
+        #[cfg(feature = "mouse")]
+        let key = match mouse.kind {
+            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                Key::MouseClick(mouse.column, mouse.row)
+            }
+            MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+                Key::MouseDrag(mouse.column, mouse.row)
+            }
+            MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
+                Key::MouseUp(mouse.column, mouse.row)
+            }
+            _ => Key::from(mouse.kind),
+        };
+        
+        #[cfg(not(feature = "mouse"))]
         let key = Key::from(mouse.kind);
+        
         let ctrl = mouse.modifiers.contains(KeyModifiers::CONTROL);
         let alt = mouse.modifiers.contains(KeyModifiers::ALT);
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
@@ -184,6 +200,28 @@ mod tests {
         ] {
             assert_eq!(Input::from(from), to, "{:?} -> {:?}", from, to);
         }
+    }
+
+    #[test]
+    #[cfg(feature = "mouse")]
+    fn mouse_click_to_input() {
+        use crossterm::event::MouseButton;
+        
+        let mouse_click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row: 5,
+            modifiers: KeyModifiers::empty(),
+        };
+        
+        let expected = Input {
+            key: Key::MouseClick(10, 5),
+            ctrl: false,
+            alt: false,
+            shift: false,
+        };
+        
+        assert_eq!(Input::from(mouse_click), expected);
     }
 
     #[test]

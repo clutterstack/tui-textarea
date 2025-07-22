@@ -33,6 +33,8 @@ tuirs-no-backend = ["tuirs"]
 search = ["dep:regex"]
 serde = ["dep:serde"]
 arbitrary = ["dep:arbitrary"]
+wrap = ["dep:textwrap"]
+mouse = []
 
 [dependencies]
 arbitrary = { version = "1", features = ["derive"], optional = true }
@@ -46,6 +48,8 @@ termwiz = { version = "0.22.0", optional = true }
 tui = { version = "0.19", default-features = false, optional = true }
 unicode-width = "0.2.0"
 serde = { version = "1", optional = true , features = ["derive"] }
+# textwrap = { version = "0.16", optional = true }
+textwrap = { git = "https://github.com/mgeisler/textwrap.git", optional = true }
 
 [[example]]
 name = "minimal"
@@ -98,6 +102,14 @@ required-features = ["tuirs-crossterm", "search"]
 [[example]]
 name = "tuirs_termion"
 required-features = ["tuirs-termion"]
+
+[[example]]
+name = "wrap_test"
+required-features = ["crossterm", "wrap"]
+
+[[example]]
+name = "mouse_demo"
+required-features = ["crossterm", "mouse"]
 
 [workspace]
 members = ["bench"]

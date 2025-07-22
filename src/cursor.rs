@@ -255,6 +255,38 @@ pub enum CursorMove {
     /// assert_eq!(textarea.cursor(), (7, 0));
     /// ```
     InViewport,
+    /// Move cursor up by one visual line when text wrapping is enabled.
+    /// When wrapping is disabled, this behaves identically to [`Up`](CursorMove::Up).
+    /// Visual lines are the lines as displayed on screen, which may differ from logical lines
+    /// when text wrapping splits long lines across multiple display rows.
+    /// ```
+    /// use tui_textarea::{TextArea, CursorMove};
+    ///
+    /// let mut textarea = TextArea::from(["This is a very long line that will wrap"]);
+    /// textarea.set_wrap(true);
+    /// textarea.set_wrap_width(Some(20));
+    ///
+    /// // Move to end of text
+    /// textarea.move_cursor(CursorMove::End);
+    /// // Move up one visual line
+    /// textarea.move_cursor(CursorMove::VisualUp);
+    /// ```
+    VisualUp,
+    /// Move cursor down by one visual line when text wrapping is enabled.
+    /// When wrapping is disabled, this behaves identically to [`Down`](CursorMove::Down).
+    /// Visual lines are the lines as displayed on screen, which may differ from logical lines
+    /// when text wrapping splits long lines across multiple display rows.
+    /// ```
+    /// use tui_textarea::{TextArea, CursorMove};
+    ///
+    /// let mut textarea = TextArea::from(["This is a very long line that will wrap"]);
+    /// textarea.set_wrap(true);
+    /// textarea.set_wrap_width(Some(20));
+    ///
+    /// // Move down one visual line
+    /// textarea.move_cursor(CursorMove::VisualDown);
+    /// ```
+    VisualDown,
 }
 
 impl CursorMove {
@@ -366,6 +398,18 @@ impl CursorMove {
                 let col = fit_col(col, &lines[row]);
 
                 Some((row, col))
+            }
+            VisualUp => {
+                // For visual movement, we need access to the TextArea's wrapping state and position methods.
+                // Since we don't have access to that here, we fall back to logical Up movement.
+                // The actual visual movement logic will be implemented in TextArea's move_cursor method.
+                Up.next_cursor((row, col), lines, viewport)
+            }
+            VisualDown => {
+                // For visual movement, we need access to the TextArea's wrapping state and position methods.
+                // Since we don't have access to that here, we fall back to logical Down movement.
+                // The actual visual movement logic will be implemented in TextArea's move_cursor method.
+                Down.next_cursor((row, col), lines, viewport)
             }
         }
     }

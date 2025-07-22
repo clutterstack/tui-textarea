@@ -15,9 +15,12 @@ use crate::word::{find_word_exclusive_end_forward, find_word_start_backward};
 use ratatui::text::Line;
 use std::cmp::Ordering;
 use std::fmt;
+
 #[cfg(feature = "tuirs")]
 use tui::text::Spans as Line;
 use unicode_width::UnicodeWidthChar as _;
+
+// Include module implementations that extend TextArea with additional methods
 
 #[derive(Debug, Clone)]
 enum YankText {
@@ -109,7 +112,7 @@ pub struct TextArea<'a> {
     block: Option<Block<'a>>,
     style: Style,
     cursor: (usize, usize), // 0-base
-    tab_len: u8,
+    pub(crate) tab_len: u8,
     hard_tab_indent: bool,
     history: History,
     cursor_line_style: Style,
@@ -123,8 +126,12 @@ pub struct TextArea<'a> {
     pub(crate) placeholder: String,
     pub(crate) placeholder_style: Style,
     mask: Option<char>,
-    selection_start: Option<(usize, usize)>,
+    pub(crate) selection_start: Option<(usize, usize)>,
     select_style: Style,
+    #[cfg(feature = "wrap")]
+    pub(crate) wrap_enabled: bool,
+    #[cfg(feature = "wrap")]
+    pub(crate) wrap_width: Option<usize>,
 }
 
 /// Convert any iterator whose elements can be converted into [`String`] into [`TextArea`]. Each [`String`] element is
@@ -230,6 +237,10 @@ impl<'a> TextArea<'a> {
             mask: None,
             selection_start: None,
             select_style: Style::default().bg(Color::LightBlue),
+            #[cfg(feature = "wrap")]
+            wrap_enabled: false,
+            #[cfg(feature = "wrap")]
+            wrap_width: None,
         }
     }
 
@@ -655,6 +666,15 @@ impl<'a> TextArea<'a> {
                 self.scroll_with_shift((-1, 0).into(), shift);
                 false
             }
+            #[cfg(feature = "mouse")]
+            Input {
+                key: Key::MouseClick(_, _),
+                ..
+            } => {
+                // Mouse clicks are handled through handle_mouse_click() method
+                // which requires text area information not available here
+                false
+            }
             _ => false,
         };
 
@@ -734,6 +754,15 @@ impl<'a> TextArea<'a> {
                 ..
             } => {
                 self.scroll((-1, 0));
+                false
+            }
+            #[cfg(feature = "mouse")]
+            Input {
+                key: Key::MouseClick(_, _),
+                ..
+            } => {
+                // Mouse clicks are handled through handle_mouse_click() method
+                // which requires text area information not available here
                 false
             }
             _ => false,
@@ -1530,16 +1559,99 @@ impl<'a> TextArea<'a> {
     }
 
     fn move_cursor_with_shift(&mut self, m: CursorMove, shift: bool) {
-        if let Some(cursor) = m.next_cursor(self.cursor, &self.lines, &self.viewport) {
-            if shift {
-                if self.selection_start.is_none() {
-                    self.start_selection();
+        use crate::cursor::CursorMove;
+        
+        // Handle visual movement for wrapped text
+        match m {
+            CursorMove::VisualUp => {
+                #[cfg(feature = "wrap")]
+                if self.wrap_enabled {
+                    if let Some(cursor) = self.visual_move_up() {
+                        self.handle_cursor_change(cursor, shift);
+                        return;
+                    }
+                }
+                // Fall back to logical movement
+                self.move_cursor_with_shift(CursorMove::Up, shift);
+            }
+            CursorMove::VisualDown => {
+                #[cfg(feature = "wrap")]
+                if self.wrap_enabled {
+                    if let Some(cursor) = self.visual_move_down() {
+                        self.handle_cursor_change(cursor, shift);
+                        return;
+                    }
+                }
+                // Fall back to logical movement
+                self.move_cursor_with_shift(CursorMove::Down, shift);
+            }
+            _ => {
+                // For all other movements, use the existing logic
+                if let Some(cursor) = m.next_cursor(self.cursor, &self.lines, &self.viewport) {
+                    self.handle_cursor_change(cursor, shift);
+                }
+            }
+        }
+    }
+    
+    fn handle_cursor_change(&mut self, cursor: (usize, usize), shift: bool) {
+        if shift {
+            if self.selection_start.is_none() {
+                self.start_selection();
+            }
+        } else {
+            self.cancel_selection();
+        }
+        self.cursor = cursor;
+    }
+    
+    #[cfg(feature = "wrap")]
+    fn visual_move_up(&self) -> Option<(usize, usize)> {
+        let (_, _, area_width, area_height) = self.viewport.rect();
+        
+        // Get current visual position
+        if let Some((visual_col, visual_row)) = self.logical_to_screen_position(area_width, area_height) {
+            if visual_row > 0 {
+                // Try to move to the same visual column on the previous visual row
+                let target_visual_row = visual_row - 1;
+                
+                // Use screen_to_logical_position to convert back
+                if let Some((target_logical_row, target_logical_col)) = 
+                    self.screen_to_logical_position(visual_col, target_visual_row, area_width, area_height) {
+                    return Some((target_logical_row, target_logical_col));
                 }
             } else {
-                self.cancel_selection();
+                // Already at top, move to beginning of first line
+                return Some((0, 0));
             }
-            self.cursor = cursor;
         }
+        
+        // Fallback to logical movement
+        None
+    }
+    
+    #[cfg(feature = "wrap")]
+    fn visual_move_down(&self) -> Option<(usize, usize)> {
+        let (_, _, area_width, area_height) = self.viewport.rect();
+        
+        // Get current visual position
+        if let Some((visual_col, visual_row)) = self.logical_to_screen_position(area_width, area_height) {
+            // Try to move to the same visual column on the next visual row
+            let target_visual_row = visual_row + 1;
+            
+            // Use screen_to_logical_position to convert back
+            if let Some((target_logical_row, target_logical_col)) = 
+                self.screen_to_logical_position(visual_col, target_visual_row, area_width, area_height) {
+                return Some((target_logical_row, target_logical_col));
+            } else {
+                // We've hit the bottom, move to end of last line
+                let last_row = self.lines.len().saturating_sub(1);
+                return Some((last_row, self.lines[last_row].chars().count()));
+            }
+        }
+        
+        // Fallback to logical movement
+        None
     }
 
     /// Undo the last modification. This method returns if the undo modified text contents or not in the textarea.
@@ -2115,6 +2227,65 @@ impl<'a> TextArea<'a> {
         self.alignment
     }
 
+    // ===== Helper functions for coordinate mapping =====
+
+    /// Calculate the visual width needed for line numbers including padding
+    #[cfg(feature = "mouse")]
+    pub(crate) fn calculate_line_number_width(&self) -> u16 {
+        if self.line_number_style().is_some() {
+            crate::util::num_digits(self.lines().len()) as u16 + 2
+        } else {
+            0
+        }
+    }
+
+    /// Calculate the visual width of a single character, handling tabs and Unicode
+    // fn calculate_char_visual_width(&self, ch: char, current_visual_pos: u16) -> u16 {
+    //     if ch == '\t' {
+    //         self.tab_len as u16 - (current_visual_pos % self.tab_len as u16)
+    //     } else {
+    //         unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) as u16
+    //     }
+    // }
+
+
+    /// Convert logical column position to visual column position within a line
+    /// accounting for tab expansion and Unicode width
+    // fn logical_to_visual_column(&self, line: &str, logical_col: usize) -> u16 {
+    //     let mut visual_pos = 0;
+        
+    //     for (char_idx, ch) in line.char_indices() {
+    //         if line[..char_idx].chars().count() >= logical_col {
+    //             break;
+    //         }
+    //         visual_pos += self.calculate_char_visual_width(ch, visual_pos);
+    //     }
+        
+    //     visual_pos
+    // }
+
+    // /// Convert visual column position to logical column position within a line
+    // /// accounting for tab expansion and Unicode width
+    // fn visual_to_logical_column(&self, line: &str, target_visual_col: u16) -> usize {
+    //     let mut logical_pos = 0;
+    //     let mut visual_pos = 0;
+        
+    //     for ch in line.chars() {
+    //         let char_width = self.calculate_char_visual_width(ch, visual_pos);
+            
+    //         if visual_pos + char_width > target_visual_col {
+    //             break;
+    //         }
+            
+    //         visual_pos += char_width;
+    //         logical_pos += 1;
+    //     }
+        
+    //     logical_pos
+    // }
+
+
+
     /// Check if the textarea has a empty content.
     /// ```
     /// use tui_textarea::TextArea;
@@ -2397,8 +2568,63 @@ impl<'a> TextArea<'a> {
         if shift && self.selection_start.is_none() {
             self.selection_start = Some(self.cursor);
         }
-        scrolling.scroll(&mut self.viewport);
+        
+        #[cfg(feature = "wrap")]
+        let wrap_enabled = self.wrap_enabled;
+        #[cfg(not(feature = "wrap"))]
+        let wrap_enabled = false;
+        
+        scrolling.scroll_with_wrap_check(&mut self.viewport, wrap_enabled);
         self.move_cursor_with_shift(CursorMove::InViewport, shift);
+    }
+
+
+    /// Helper function to find a slice of characters within another slice of characters
+    #[cfg(feature = "wrap")]
+    fn find_char_slice_in_chars(haystack: &[char], needle: &[char]) -> Option<usize> {
+        if needle.is_empty() {
+            return Some(0);
+        }
+        
+        haystack
+            .windows(needle.len())
+            .position(|window| window == needle)
+    }
+
+    /// Calculate the character range of a wrapped segment within the original line text
+    #[cfg(feature = "wrap")]
+    pub(crate) fn calculate_segment_char_range(
+        full_line: &str,
+        wrapped_lines: &[std::borrow::Cow<str>],
+        target_wrap_index: usize,
+    ) -> (usize, usize) {
+        let mut current_char_pos = 0;
+        let full_line_chars: Vec<char> = full_line.chars().collect();
+
+        for (seg_idx, segment) in wrapped_lines.iter().enumerate() {
+            let segment_chars: Vec<char> = segment.chars().collect();
+            let segment_char_len = segment_chars.len();
+
+            if seg_idx == target_wrap_index {
+                let start_char = current_char_pos;
+                let end_char = current_char_pos + segment_char_len;
+                return (start_char, end_char);
+            }
+
+            // Find the segment within the remaining part of the full line
+            let remaining_chars = &full_line_chars[current_char_pos..];
+            
+            // Look for the segment text in the remaining characters
+            if let Some(found_pos) = Self::find_char_slice_in_chars(remaining_chars, &segment_chars) {
+                current_char_pos += found_pos + segment_char_len;
+            } else {
+                // Fallback: just advance by segment length
+                current_char_pos += segment_char_len;
+            }
+        }
+
+        // If target_wrap_index is beyond available segments, return end position
+        (current_char_pos, current_char_pos)
     }
 }
 
@@ -2429,5 +2655,40 @@ mod tests {
         assert_eq!(textarea.cursor(), (15, 0));
         textarea.scroll((-5, 0));
         assert_eq!(textarea.cursor(), (12, 0));
+    }
+
+    #[test]
+    #[cfg(feature = "mouse")]
+    fn mouse_click_coordinate_mapping() {
+        use crate::ratatui::layout::Rect;
+        use crate::ratatui::widgets::{Block, Borders};
+
+        let mut textarea = TextArea::default();
+        textarea.insert_str("Hello\nWorld\nTest");
+        
+        // Test without block (no borders)
+        let widget_area = Rect::new(0, 0, 10, 5);
+        
+        // Click at (1, 1) should position cursor at (1, 1)
+        assert!(textarea.handle_mouse_click(1, 1, widget_area));
+        assert_eq!(textarea.cursor(), (1, 1));
+        
+        // Click at (0, 0) should position cursor at (0, 0)
+        assert!(textarea.handle_mouse_click(0, 0, widget_area));
+        assert_eq!(textarea.cursor(), (0, 0));
+        
+        // Test with block (with borders)
+        textarea.set_block(Block::default().borders(Borders::ALL));
+        
+        // Click at (1, 1) should now position cursor at (0, 0) because borders take up space
+        assert!(textarea.handle_mouse_click(1, 1, widget_area));
+        assert_eq!(textarea.cursor(), (0, 0));
+        
+        // Click at (2, 2) should position cursor at (1, 1)
+        assert!(textarea.handle_mouse_click(2, 2, widget_area));
+        assert_eq!(textarea.cursor(), (1, 1));
+        
+        // Click outside widget area should return false
+        assert!(!textarea.handle_mouse_click(10, 10, widget_area));
     }
 }

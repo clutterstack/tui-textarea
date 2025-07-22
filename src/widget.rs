@@ -151,7 +151,7 @@ fn calculate_horizontal_range(
         // Find the ending character index
         if found_start && visual_pos >= col_right {
             // Find the next character boundary
-            for (end_idx, _) in line[char_idx..].char_indices() {
+            if let Some((end_idx, _)) = line[char_idx..].char_indices().next() {
                 return (start_char_idx, char_idx + end_idx, start_visual_offset);
             }
             return (start_char_idx, line.len(), start_visual_offset);

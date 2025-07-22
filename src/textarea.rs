@@ -15,12 +15,16 @@ use crate::word::{find_word_exclusive_end_forward, find_word_start_backward};
 use ratatui::text::Line;
 use std::cmp::Ordering;
 use std::fmt;
-#[cfg(feature = "wrap")]
-use textwrap::Options;
 
 #[cfg(feature = "tuirs")]
 use tui::text::Spans as Line;
 use unicode_width::UnicodeWidthChar as _;
+
+// Include module implementations that extend TextArea with additional methods
+#[cfg(feature = "mouse")]
+mod mouse;
+#[cfg(feature = "wrap")]
+mod wrapping;
 
 #[derive(Debug, Clone)]
 enum YankText {
@@ -1565,7 +1569,7 @@ impl<'a> TextArea<'a> {
         match m {
             CursorMove::VisualUp => {
                 #[cfg(feature = "wrap")]
-                if self.wrap_enabled() {
+                if self.wrap_enabled {
                     if let Some(cursor) = self.visual_move_up() {
                         self.handle_cursor_change(cursor, shift);
                         return;
@@ -1576,7 +1580,7 @@ impl<'a> TextArea<'a> {
             }
             CursorMove::VisualDown => {
                 #[cfg(feature = "wrap")]
-                if self.wrap_enabled() {
+                if self.wrap_enabled {
                     if let Some(cursor) = self.visual_move_down() {
                         self.handle_cursor_change(cursor, shift);
                         return;
@@ -2227,84 +2231,6 @@ impl<'a> TextArea<'a> {
         self.alignment
     }
 
-    /// Enable or disable text wrapping. When enabled, long lines will be wrapped to fit within the
-    /// specified width. Wrapping is disabled by default.
-    /// ```
-    /// use tui_textarea::TextArea;
-    ///
-    /// let mut textarea = TextArea::default();
-    /// textarea.set_wrap(true);
-    /// ```
-    #[cfg(feature = "wrap")]
-    pub fn set_wrap(&mut self, enabled: bool) {
-        self.wrap_enabled = enabled;
-    }
-
-    /// Check if text wrapping is enabled.
-    /// ```
-    /// use tui_textarea::TextArea;
-    ///
-    /// let mut textarea = TextArea::default();
-    /// assert!(!textarea.wrap_enabled());
-    /// textarea.set_wrap(true);
-    /// assert!(textarea.wrap_enabled());
-    /// ```
-    #[cfg(feature = "wrap")]
-    pub fn wrap_enabled(&self) -> bool {
-        self.wrap_enabled
-    }
-
-    /// Set the wrap width. If `None`, wrapping will use the available text area width.
-    /// If `Some(width)`, lines will be wrapped at the specified character width.
-    /// ```
-    /// use tui_textarea::TextArea;
-    ///
-    /// let mut textarea = TextArea::default();
-    /// textarea.set_wrap(true);
-    /// textarea.set_wrap_width(Some(80)); // Wrap at 80 characters
-    /// ```
-    #[cfg(feature = "wrap")]
-    pub fn set_wrap_width(&mut self, width: Option<usize>) {
-        self.wrap_width = width;
-    }
-
-    /// Get the current wrap width setting.
-    /// ```
-    /// use tui_textarea::TextArea;
-    ///
-    /// let mut textarea = TextArea::default();
-    /// assert_eq!(textarea.wrap_width(), None);
-    /// textarea.set_wrap_width(Some(80));
-    /// assert_eq!(textarea.wrap_width(), Some(80));
-    /// ```
-    #[cfg(feature = "wrap")]
-    pub fn wrap_width(&self) -> Option<usize> {
-        self.wrap_width
-    }
-
-    /// Handle a mouse click at the given screen coordinates within the widget area.
-    /// Returns `true` if the click was handled and the cursor was moved.
-    /// 
-    /// The coordinates should be relative to the terminal screen. This method automatically
-    /// accounts for borders and padding by calculating the inner text area if the TextArea
-    /// has a block configured.
-    /// 
-    /// ```
-    /// use tui_textarea::TextArea;
-    /// use ratatui::widgets::{Block, Borders};
-    /// use ratatui::layout::Rect;
-    ///
-    /// let mut textarea = TextArea::default();
-    /// textarea.set_block(Block::default().borders(Borders::ALL));
-    /// textarea.insert_str("Hello\nWorld");
-    /// 
-    /// // Simulate a click at screen position (5, 1) within widget area at (0, 0, 10, 5)
-    /// // The method automatically accounts for the block borders
-    /// let widget_area = Rect::new(0, 0, 10, 5);
-    /// let handled = textarea.handle_mouse_click(5, 1, widget_area);
-    /// // handled will be true if the click was within the text content
-    /// ```
-
     // ===== Helper functions for coordinate mapping =====
 
     /// Calculate the visual width needed for line numbers including padding
@@ -2325,24 +2251,6 @@ impl<'a> TextArea<'a> {
         }
     }
 
-    /// Calculate the effective wrap width considering line numbers and custom wrap width
-    #[cfg(feature = "wrap")]
-    fn calculate_effective_wrap_width(&self, area_width: u16) -> usize {
-        let mut wrap_width = area_width as usize;
-        
-        // Subtract line number width if enabled
-        if self.line_number_style().is_some() {
-            let lnum_len = crate::util::num_digits(self.lines().len());
-            wrap_width = wrap_width.saturating_sub((lnum_len + 2) as usize);
-        }
-        
-        // Use custom wrap width if set
-        if let Some(custom_width) = self.wrap_width() {
-            wrap_width = custom_width;
-        }
-        
-        wrap_width.max(1) // Ensure minimum width of 1
-    }
 
     /// Convert logical column position to visual column position within a line
     /// accounting for tab expansion and Unicode width
@@ -2379,415 +2287,7 @@ impl<'a> TextArea<'a> {
         logical_pos
     }
 
-    // ===== Mouse handling methods =====
 
-    #[cfg(feature = "mouse")]
-    pub fn handle_mouse_event(&mut self, key: Key, widget_area: crate::ratatui::layout::Rect) -> bool {
-        match key {
-            Key::MouseClick(x, y) => self.handle_mouse_click(x, y, widget_area),
-            Key::MouseDrag(x, y) => self.handle_mouse_drag(x, y, widget_area),
-            Key::MouseUp(x, y) => self.handle_mouse_up(x, y, widget_area),
-            _ => false,
-        }
-    }
-
-    #[cfg(feature = "mouse")]
-    pub fn handle_mouse_click(&mut self, screen_x: u16, screen_y: u16, widget_area: crate::ratatui::layout::Rect) -> bool {
-        // Calculate the actual text area, accounting for block borders if present
-        let text_area = if let Some(block) = self.block() {
-            block.inner(widget_area)
-        } else {
-            widget_area
-        };
-        
-        // Convert screen coordinates to text area relative coordinates
-        let rel_x = screen_x.saturating_sub(text_area.x);
-        let rel_y = screen_y.saturating_sub(text_area.y);
-        
-        // Check if click is within the text area bounds
-        if rel_x >= text_area.width || rel_y >= text_area.height {
-            return false;
-        }
-        
-        if let Some((row, col)) = self.screen_to_logical_position(rel_x, rel_y, text_area.width, text_area.height) {
-            // Start selection on mouse down
-            self.selection_start = Some((row, col));
-            self.move_cursor(crate::cursor::CursorMove::Jump(row as u16, col as u16));
-            true
-        } else {
-            false
-        }
-    }
-
-    #[cfg(feature = "mouse")]
-    pub fn handle_mouse_drag(&mut self, screen_x: u16, screen_y: u16, widget_area: crate::ratatui::layout::Rect) -> bool {
-        // Calculate the actual text area, accounting for block borders if present
-        let text_area = if let Some(block) = self.block() {
-            block.inner(widget_area)
-        } else {
-            widget_area
-        };
-        
-        // Convert screen coordinates to text area relative coordinates
-        let rel_x = screen_x.saturating_sub(text_area.x);
-        let rel_y = screen_y.saturating_sub(text_area.y);
-        
-        // Check if drag is within the text area bounds
-        if rel_x >= text_area.width || rel_y >= text_area.height {
-            return false;
-        }
-        
-        if let Some((row, col)) = self.screen_to_logical_position(rel_x, rel_y, text_area.width, text_area.height) {
-            // Extend selection to current drag position
-            self.move_cursor(crate::cursor::CursorMove::Jump(row as u16, col as u16));
-            true
-        } else {
-            false
-        }
-    }
-
-    #[cfg(feature = "mouse")]
-    pub fn handle_mouse_up(&mut self, screen_x: u16, screen_y: u16, widget_area: crate::ratatui::layout::Rect) -> bool {
-        // Calculate the actual text area, accounting for block borders if present
-        let text_area = if let Some(block) = self.block() {
-            block.inner(widget_area)
-        } else {
-            widget_area
-        };
-        
-        // Convert screen coordinates to text area relative coordinates
-        let rel_x = screen_x.saturating_sub(text_area.x);
-        let rel_y = screen_y.saturating_sub(text_area.y);
-        
-        // Check if release is within the text area bounds
-        if rel_x >= text_area.width || rel_y >= text_area.height {
-            return false;
-        }
-        
-        if let Some((row, col)) = self.screen_to_logical_position(rel_x, rel_y, text_area.width, text_area.height) {
-            // Finalize selection at current position
-            self.move_cursor(crate::cursor::CursorMove::Jump(row as u16, col as u16));
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Convert screen coordinates (relative to text area) to logical text position.
-    /// Returns `Some((row, col))` if the coordinates map to valid text content.
-    #[cfg(feature = "mouse")]
-    pub fn screen_to_logical_position(&self, rel_x: u16, rel_y: u16, area_width: u16, _area_height: u16) -> Option<(usize, usize)> {
-        // Get the current viewport information
-        let (top_row, _) = self.viewport.scroll_top();
-        let display_line_index = rel_y as usize;
-        
-        // Check if wrapping is enabled and handle accordingly
-        #[cfg(feature = "wrap")]
-        let wrap_enabled = self.wrap_enabled();
-        #[cfg(not(feature = "wrap"))]
-        let wrap_enabled = false;
-        
-        if wrap_enabled {
-            #[cfg(feature = "wrap")]
-            {
-                return self.screen_to_logical_position_wrapped(rel_x, display_line_index, area_width, top_row as usize);
-            }
-            #[cfg(not(feature = "wrap"))]
-            {
-                return None;
-            }
-        } else {
-            return self.screen_to_logical_position_unwrapped(rel_x, display_line_index, top_row as usize);
-        }
-    }
-
-    /// Handle coordinate mapping for non-wrapped text (simpler case)
-    #[cfg(feature = "mouse")]
-    fn screen_to_logical_position_unwrapped(&self, rel_x: u16, display_line_index: usize, top_row: usize) -> Option<(usize, usize)> {
-        let logical_row = top_row + display_line_index;
-        
-        // Check if the logical row exists
-        if logical_row >= self.lines().len() {
-            return None;
-        }
-        
-        // Account for line numbers if enabled
-        let lnum_width = self.calculate_line_number_width();
-        if lnum_width > 0 && rel_x < lnum_width {
-            // Click was on line number area, position at start of line
-            return Some((logical_row, 0));
-        }
-        
-        let line = &self.lines()[logical_row];
-        let target_visual_col = rel_x.saturating_sub(lnum_width);
-        let logical_col = self.visual_to_logical_column(line, target_visual_col);
-        
-        Some((logical_row, logical_col))
-    }
-
-    /// Handle coordinate mapping for wrapped text (more complex case)
-    #[cfg(all(feature = "mouse", feature = "wrap"))]
-    fn screen_to_logical_position_wrapped(&self, rel_x: u16, display_line_index: usize, area_width: u16, top_row: usize) -> Option<(usize, usize)> {
-        let wrap_width = self.calculate_effective_wrap_width(area_width);
-        let lnum_width = self.calculate_line_number_width();
-        let mut current_display_line = 0;
-        // Create Options and set preserve_trailing_space
-        let options = Options::new(wrap_width).preserve_trailing_space(true);
-
-        
-        // Walk through logical lines to find which one contains our target display line
-        for (logical_row, line_text) in self.lines().iter().enumerate() {
-            if logical_row < top_row {
-                // Skip lines before viewport, but count their wrapped segments
-                let wrapped_count = textwrap::wrap(line_text, &options).len();
-                current_display_line += wrapped_count;
-                continue;
-            }
-            
-            let wrapped_lines = textwrap::wrap(line_text, &options);
-            
-            // Check if our target display line is within this logical line's wrapped segments
-            if display_line_index < current_display_line + wrapped_lines.len() {
-                let wrap_segment_index = display_line_index - current_display_line;
-                
-                // Handle line number area clicks
-                if lnum_width > 0 && rel_x < lnum_width {
-                    return Some((logical_row, 0));
-                }
-                
-                // Use the same character tracking logic as logical_to_screen_position_wrapped
-                let line_chars: Vec<char> = line_text.chars().collect();
-                let mut original_pos = 0;
-                
-                // Find the character offset for this segment
-                for (seg_idx, seg) in wrapped_lines.iter().enumerate() {
-                    if seg_idx == wrap_segment_index {
-                        // Found our target segment
-                        let target_visual_col = rel_x.saturating_sub(lnum_width);
-                        let segment_text = seg.to_string();
-                        let segment_logical_col = self.visual_to_logical_column(&segment_text, target_visual_col);
-                        
-                        return Some((logical_row, original_pos + segment_logical_col));
-                    }
-                    
-                    // Move to next segment using the same logic as logical_to_screen_position_wrapped
-                    let segment_text = seg.to_string();
-                    let segment_chars: Vec<char> = segment_text.chars().collect();
-                    
-                    // Find where this segment ends in the original text
-                    let mut segment_end_in_original = original_pos;
-                    let mut segment_char_idx = 0;
-                    
-                    while segment_char_idx < segment_chars.len() && segment_end_in_original < line_chars.len() {
-                        if line_chars[segment_end_in_original] == segment_chars[segment_char_idx] {
-                            segment_char_idx += 1;
-                        }
-                        segment_end_in_original += 1;
-                    }
-                    
-                    original_pos = segment_end_in_original;
-                    
-                    // Skip any whitespace that textwrap removed between segments
-                    while original_pos < line_chars.len() && line_chars[original_pos].is_whitespace() {
-                        if seg_idx < wrapped_lines.len() - 1 {
-                            original_pos += 1;
-                        } else {
-                            break;
-                        }
-                    }
-                }
-            }
-            
-            current_display_line += wrapped_lines.len();
-        }
-        
-        None
-    }
-
-
-    /// Convert logical cursor position to screen coordinates relative to the text area.
-    /// Returns `(screen_x, screen_y)` coordinates where the cursor should be displayed
-    /// accounting for text wrapping, line numbers, and scrolling.
-    /// 
-    /// This is the inverse of `screen_to_logical_position` and is useful for positioning
-    /// the terminal cursor when rendering the textarea.
-    /// 
-    /// # Arguments
-    /// * `area_width` - The width of the text area (excluding borders)
-    /// * `area_height` - The height of the text area (excluding borders)
-    /// 
-    /// # Returns
-    /// * `Some((x, y))` - Screen coordinates relative to text area, or `None` if cursor is not visible
-    /// 
-    /// # Example
-    /// ```
-    /// # use ratatui::layout::Rect;
-    /// use tui_textarea::TextArea;
-    /// 
-    /// let mut textarea = TextArea::from(["hello world", "second line"]);
-    /// textarea.move_cursor(tui_textarea::CursorMove::Jump(1, 3));
-    /// 
-    /// if let Some((x, y)) = textarea.logical_to_screen_position(50, 10) {
-    ///     println!("Cursor should be displayed at screen position ({}, {})", x, y);
-    /// }
-    /// ```
-    #[cfg(feature = "mouse")]
-    pub fn logical_to_screen_position(&self, area_width: u16, area_height: u16) -> Option<(u16, u16)> {
-        let (logical_row, logical_col) = self.cursor();
-        let (top_row, left_col) = self.viewport.scroll_top();
-        
-        // Check if cursor is outside viewable area vertically
-        if logical_row < top_row as usize {
-            return None; // Cursor is above visible area
-        }
-        
-        #[cfg(feature = "wrap")]
-        let wrap_enabled = self.wrap_enabled();
-        #[cfg(not(feature = "wrap"))]
-        let wrap_enabled = false;
-        
-        if wrap_enabled {
-            self.logical_to_screen_position_wrapped(logical_row, logical_col, area_width, area_height, top_row as usize)
-        } else {
-            self.logical_to_screen_position_unwrapped(logical_row, logical_col, area_width, area_height, top_row as usize, left_col)
-        }
-    }
-
-    /// Handle coordinate mapping for unwrapped text (simpler case)
-    #[cfg(feature = "mouse")]
-    fn logical_to_screen_position_unwrapped(&self, logical_row: usize, logical_col: usize, area_width: u16, area_height: u16, top_row: usize, left_col: u16) -> Option<(u16, u16)> {
-        // Check if cursor row is within visible area
-        let screen_y = logical_row.checked_sub(top_row)?;
-        if screen_y >= area_height as usize {
-            return None; // Cursor is below visible area
-        }
-        
-        // Get line and calculate visual position
-        if logical_row >= self.lines().len() {
-            return None;
-        }
-        
-        let line = &self.lines()[logical_row];
-        let visual_col = self.logical_to_visual_column(line, logical_col);
-        
-        // Apply horizontal scrolling
-        let scrolled_visual_col = visual_col.saturating_sub(left_col);
-        
-        // Add line number width
-        let lnum_width = self.calculate_line_number_width();
-        let screen_x = lnum_width + scrolled_visual_col;
-        
-        // Check if cursor is within horizontal bounds
-        if screen_x >= area_width {
-            return None; // Cursor is off-screen horizontally
-        }
-        
-        Some((screen_x, screen_y as u16))
-    }
-
-    /// Handle coordinate mapping for wrapped text (more complex case)
-    #[cfg(all(feature = "mouse", feature = "wrap"))]
-    fn logical_to_screen_position_wrapped(&self, logical_row: usize, logical_col: usize, area_width: u16, area_height: u16, top_row: usize) -> Option<(u16, u16)> {
-        let wrap_width = self.calculate_effective_wrap_width(area_width);
-        let lnum_width = self.calculate_line_number_width();
-        let mut current_display_line = 0;
-
-        // Create Options and set preserve_trailing_space
-        let options = Options::new(wrap_width).preserve_trailing_space(true);
-
-        
-        // Count display lines before the cursor's logical row
-        for row in top_row..logical_row {
-            if row >= self.lines().len() {
-                break;
-            }
-            
-            let line = &self.lines()[row];
-            if line.is_empty() {
-                current_display_line += 1;
-            } else {
-                let wrapped_lines_count = textwrap::wrap(line, &options).len();
-                current_display_line += wrapped_lines_count;
-            }
-        }
-        
-        // Now handle the cursor's logical row
-        if logical_row < self.lines().len() {
-            let line = &self.lines()[logical_row];
-            
-            if line.is_empty() {
-                // Empty line
-                let screen_y = current_display_line;
-                if screen_y >= area_height as usize {
-                    return None; // Below visible area
-                }
-                return Some((lnum_width, screen_y as u16));
-            }
-            
-            // Use textwrap to get the wrapped segments, but track original positions carefully
-            let wrapped_lines = textwrap::wrap(line, &options);
-            let line_chars: Vec<char> = line.chars().collect();
-            let logical_col = logical_col.min(line_chars.len());
-            
-            // Track position in original text
-            let mut original_pos = 0;
-            
-            for (segment_index, wrapped_segment) in wrapped_lines.iter().enumerate() {
-                let segment_text = wrapped_segment.to_string();
-                let segment_chars: Vec<char> = segment_text.chars().collect();
-                
-                // Find where this segment starts in the original text
-                let segment_start_in_original = original_pos;
-                
-                // Find where this segment ends in the original text by searching forward
-                let mut segment_end_in_original = original_pos;
-                let mut segment_char_idx = 0;
-                
-                while segment_char_idx < segment_chars.len() && segment_end_in_original < line_chars.len() {
-                    if line_chars[segment_end_in_original] == segment_chars[segment_char_idx] {
-                        segment_char_idx += 1;
-                    }
-                    segment_end_in_original += 1;
-                }
-                
-                // Check if cursor is within this segment's original range
-                if logical_col >= segment_start_in_original && 
-                   (logical_col < segment_end_in_original || segment_index == wrapped_lines.len() - 1) {
-                    
-                    // Calculate position within the segment
-                    let pos_in_segment = logical_col - segment_start_in_original;
-                    let visual_col_in_segment = self.logical_to_visual_column(&segment_text, pos_in_segment.min(segment_chars.len()));
-                    
-                    let screen_y = current_display_line + segment_index;
-                    if screen_y >= area_height as usize {
-                        return None; // Below visible area
-                    }
-                    
-                    let screen_x = lnum_width + visual_col_in_segment;
-                    if screen_x >= area_width {
-                        return None; // Off-screen horizontally
-                    }
-                    
-                    return Some((screen_x, screen_y as u16));
-                }
-                
-                // Move to the next segment
-                original_pos = segment_end_in_original;
-                
-                // Skip any whitespace that textwrap removed between segments
-                while original_pos < line_chars.len() && line_chars[original_pos].is_whitespace() {
-                    // But only skip if we're not at the last segment
-                    if segment_index < wrapped_lines.len() - 1 {
-                        original_pos += 1;
-                    } else {
-                        break;
-                    }
-                }
-            }
-        }
-        
-        None
-    }
 
     /// Check if the textarea has a empty content.
     /// ```
@@ -3073,7 +2573,7 @@ impl<'a> TextArea<'a> {
         }
         
         #[cfg(feature = "wrap")]
-        let wrap_enabled = self.wrap_enabled();
+        let wrap_enabled = self.wrap_enabled;
         #[cfg(not(feature = "wrap"))]
         let wrap_enabled = false;
         

@@ -134,17 +134,12 @@ fn calculate_horizontal_range(
     for (char_idx, c) in line.char_indices() {
         let char_width = char_visual_width(c, visual_pos, tab_len);
         
-        if !found_start {
-            if visual_pos + char_width > col_left {
+        if !found_start
+            && visual_pos + char_width > col_left {
                 start_char_idx = char_idx;
-                start_visual_offset = if visual_pos < col_left {
-                    col_left - visual_pos
-                } else {
-                    0
-                };
+                start_visual_offset = col_left.saturating_sub(visual_pos);
                 found_start = true;
             }
-        }
         
         visual_pos += char_width;
         

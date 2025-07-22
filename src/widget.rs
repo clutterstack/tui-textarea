@@ -2,18 +2,18 @@ use crate::ratatui::buffer::Buffer;
 use crate::ratatui::layout::Rect;
 use crate::ratatui::text::Span;
 use crate::ratatui::widgets::Widget;
-use crate::ratatui::style::Style;
 use crate::textarea::TextArea;
 use crate::util::num_digits;
 #[cfg(feature = "wrap")]
+use crate::wrap;
+#[cfg(feature = "wrap")]
 use crate::highlight::extract_segment_spans;
+#[cfg(feature = "wrap")]
+use textwrap::Options;
 #[cfg(feature = "ratatui")]
 use ratatui::text::Line;
 use std::cmp;
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(feature = "wrap")]
-use textwrap::Options;
-
 #[cfg(feature = "tuirs")]
 use tui::text::Spans as Line;
 
@@ -172,113 +172,14 @@ impl<'a> TextArea<'a> {
         #[cfg(feature = "wrap")]
         let wrap_enabled = self.wrap_enabled();
         #[cfg(not(feature = "wrap"))]
-        let wrap_enabled = false;
+        // let wrap_enabled = false;
 
+        #[cfg(feature = "wrap")]
         if wrap_enabled {
-            return self.render_wrapped_lines(top_row, height, area_width, lnum_len, show_line_numbers, line_number_style);
+            return wrap::render_wrapped_lines(self, top_row, height, area_width, lnum_len, show_line_numbers, line_number_style);
         }
 
         self.render_unwrapped_lines(top_row, height, area_width, lnum_len, show_line_numbers)
-    }
-
-    fn render_wrapped_lines(
-        &'a self,
-        top_row: usize,
-        height: usize,
-        area_width: u16,
-        lnum_len: u8,
-        show_line_numbers: bool,
-        line_number_style: Option<Style>,
-    ) -> Vec<Line<'a>> {
-        #[cfg(not(feature = "wrap"))]
-        {
-            Vec::new()
-        }
-
-        #[cfg(feature = "wrap")]
-        {
-            use crate::ratatui::text::{Line, Span};
-
-            const LNUM_PADDING: usize = 2;
-            let mut wrap_width = area_width as usize;
-
-            if show_line_numbers {
-                wrap_width = wrap_width.saturating_sub(lnum_len as usize + LNUM_PADDING);
-            }
-
-            if let Some(custom_width) = self.wrap_width() {
-                wrap_width = custom_width;
-            }
-
-            wrap_width = wrap_width.max(1);
-            
-            // Create Options and set preserve_trailing_space
-            let options = Options::new(wrap_width).preserve_trailing_space(true);
-
-            let mut lines = Vec::new();
-            let mut display_row = 0;
-
-            for (logical_row, line_text) in self.lines().iter().enumerate() {
-                let wrapped_lines = textwrap::wrap(line_text, &options);
-
-                if display_row + wrapped_lines.len() <= top_row {
-                    // Skip this line entirely
-                    display_row += wrapped_lines.len();
-                    continue;
-                }
-
-                for (wrap_index, wrapped_line) in wrapped_lines.iter().enumerate() {
-                    if display_row >= top_row + height {
-                        break;
-                    }
-
-                    if display_row >= top_row {
-                        let mut spans = Vec::new();
-
-                        if show_line_numbers {
-                            if wrap_index == 0 {
-                                let style = line_number_style.expect("checked already");
-                                let lnum = format!(" {:>width$} ", logical_row + 1, width = lnum_len as usize);
-                                spans.push(Span::styled(lnum, style));
-                            } else {
-                                let padding = " ".repeat(lnum_len as usize + LNUM_PADDING);
-                                spans.push(Span::raw(padding));
-                            }
-                        }
-
-                        // Get fully highlighted line (handles selection, cursor, search, etc.)
-                        let full_highlighted_line = self.line_spans(line_text, logical_row, 0);
-                        
-                        // Calculate character range for this wrapped segment
-                        let (segment_start_char, segment_end_char) = 
-                            TextArea::calculate_segment_char_range(line_text, &wrapped_lines, wrap_index);
-                        
-                        // Extract spans for this segment from the highlighted line
-                        let segment_spans = extract_segment_spans(
-                            full_highlighted_line,
-                            segment_start_char,
-                            segment_end_char,
-                        );
-                        
-                        // Add extracted spans to our line, or fallback if empty
-                        if segment_spans.is_empty() {
-                            spans.push(Span::styled(wrapped_line.to_string(), self.style()));
-                        } else {
-                            spans.extend(segment_spans);
-                        }
-                        lines.push(Line::from(spans));
-                    }
-
-                    display_row += 1;
-                }
-
-                if display_row >= top_row + height {
-                    break;
-                }
-            }
-
-            lines
-        }
     }
 
     fn render_unwrapped_lines(

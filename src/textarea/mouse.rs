@@ -1,3 +1,5 @@
+#![cfg(feature = "mouse")]
+
 use crate::cursor::CursorMove;
 use crate::input::Key;
 use crate::textarea::TextArea;
@@ -7,7 +9,7 @@ use textwrap::Options;
 /// Mouse handling functionality for TextArea
 impl<'a> TextArea<'a> {
     /// Helper method for calculate_effective_wrap_width when wrap feature is not available
-    #[cfg(all(feature = "mouse", not(feature = "wrap")))]
+    #[cfg(not(feature = "wrap"))]
     fn calculate_effective_wrap_width(&self, area_width: u16) -> usize {
         let mut wrap_width = area_width as usize;
         
@@ -20,7 +22,6 @@ impl<'a> TextArea<'a> {
         wrap_width.max(1) // Ensure minimum width of 1
     }
     /// Handle mouse events and route to appropriate handler
-    #[cfg(feature = "mouse")]
     pub fn handle_mouse_event(&mut self, key: Key, widget_area: crate::ratatui::layout::Rect) -> bool {
         match key {
             Key::MouseClick(x, y) => self.handle_mouse_click(x, y, widget_area),
@@ -31,7 +32,6 @@ impl<'a> TextArea<'a> {
     }
 
     /// Handle mouse click events for text selection and cursor positioning
-    #[cfg(feature = "mouse")]
     pub fn handle_mouse_click(&mut self, screen_x: u16, screen_y: u16, widget_area: crate::ratatui::layout::Rect) -> bool {
         // Calculate the actual text area, accounting for block borders if present
         let text_area = if let Some(block) = self.block() {
@@ -60,7 +60,6 @@ impl<'a> TextArea<'a> {
     }
 
     /// Handle mouse drag events for extending text selection
-    #[cfg(feature = "mouse")]
     pub fn handle_mouse_drag(&mut self, screen_x: u16, screen_y: u16, widget_area: crate::ratatui::layout::Rect) -> bool {
         // Calculate the actual text area, accounting for block borders if present
         let text_area = if let Some(block) = self.block() {
@@ -88,7 +87,6 @@ impl<'a> TextArea<'a> {
     }
 
     /// Handle mouse up events for finalizing text selection
-    #[cfg(feature = "mouse")]
     pub fn handle_mouse_up(&mut self, screen_x: u16, screen_y: u16, widget_area: crate::ratatui::layout::Rect) -> bool {
         // Calculate the actual text area, accounting for block borders if present
         let text_area = if let Some(block) = self.block() {
@@ -116,7 +114,6 @@ impl<'a> TextArea<'a> {
     }
 
     /// Convert screen coordinates to logical text position
-    #[cfg(feature = "mouse")]
     pub fn screen_to_logical_position(&self, rel_x: u16, rel_y: u16, area_width: u16, _area_height: u16) -> Option<(usize, usize)> {
         // Get the current viewport information
         let (top_row, _) = self.viewport.scroll_top();
@@ -140,7 +137,6 @@ impl<'a> TextArea<'a> {
     }
 
     /// Convert screen coordinates to logical position when wrapping is disabled
-    #[cfg(feature = "mouse")]
     fn screen_to_logical_position_unwrapped(&self, rel_x: u16, display_line_index: usize, top_row: usize) -> Option<(usize, usize)> {
         let logical_row = top_row + display_line_index;
         
@@ -167,7 +163,7 @@ impl<'a> TextArea<'a> {
     }
 
     /// Convert screen coordinates to logical position when wrapping is enabled
-    #[cfg(all(feature = "mouse", feature = "wrap"))]
+    #[cfg(feature = "wrap")]
     fn screen_to_logical_position_wrapped(&self, rel_x: u16, display_line_index: usize, area_width: u16, top_row: usize) -> Option<(usize, usize)> {
         let wrap_width = self.calculate_effective_wrap_width(area_width);
         let lnum_width = self.calculate_line_number_width();
@@ -231,7 +227,6 @@ impl<'a> TextArea<'a> {
     }
 
     /// Convert logical cursor position to screen coordinates
-    #[cfg(feature = "mouse")]
     pub fn logical_to_screen_position(&self, area_width: u16, area_height: u16) -> Option<(u16, u16)> {
         let (logical_row, logical_col) = self.cursor();
         let (top_row, left_col) = self.viewport.scroll_top();
@@ -258,7 +253,6 @@ impl<'a> TextArea<'a> {
     }
 
     /// Convert logical position to screen coordinates when wrapping is disabled
-    #[cfg(feature = "mouse")]
     fn logical_to_screen_position_unwrapped(&self, logical_row: usize, logical_col: usize, area_width: u16, area_height: u16, top_row: usize, left_col: u16) -> Option<(u16, u16)> {
         // Check if cursor row is within visible area
         let screen_y = logical_row.checked_sub(top_row)?;
@@ -292,7 +286,7 @@ impl<'a> TextArea<'a> {
     }
 
     /// Convert logical position to screen coordinates when wrapping is enabled
-    #[cfg(all(feature = "mouse", feature = "wrap"))]
+    #[cfg(feature = "wrap")]
     fn logical_to_screen_position_wrapped(&self, logical_row: usize, logical_col: usize, area_width: u16, area_height: u16, top_row: usize) -> Option<(u16, u16)> {
         let wrap_width = self.calculate_effective_wrap_width(area_width);
         let lnum_width = self.calculate_line_number_width();

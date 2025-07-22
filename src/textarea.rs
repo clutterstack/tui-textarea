@@ -24,7 +24,7 @@ use unicode_width::UnicodeWidthChar as _;
 #[cfg(feature = "mouse")]
 mod mouse;
 #[cfg(feature = "wrap")]
-mod wrapping;
+mod wrap;
 
 #[derive(Debug, Clone)]
 enum YankText {

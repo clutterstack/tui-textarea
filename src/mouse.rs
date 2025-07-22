@@ -8,19 +8,6 @@ use textwrap::Options;
 
 /// Mouse handling functionality for TextArea
 impl<'a> TextArea<'a> {
-    /// Helper method for calculate_effective_wrap_width when wrap feature is not available
-    #[cfg(not(feature = "wrap"))]
-    fn calculate_effective_wrap_width(&self, area_width: u16) -> usize {
-        let mut wrap_width = area_width as usize;
-        
-        // Subtract line number width if enabled
-        if self.line_number_style().is_some() {
-            let lnum_len = crate::util::num_digits(self.lines().len());
-            wrap_width = wrap_width.saturating_sub((lnum_len + 2) as usize);
-        }
-        
-        wrap_width.max(1) // Ensure minimum width of 1
-    }
     /// Handle mouse events and route to appropriate handler
     pub fn handle_mouse_event(&mut self, key: Key, widget_area: crate::ratatui::layout::Rect) -> bool {
         match key {

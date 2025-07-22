@@ -4,12 +4,6 @@ use crate::ratatui::text::Span;
 use crate::ratatui::widgets::Widget;
 use crate::textarea::TextArea;
 use crate::util::num_digits;
-#[cfg(feature = "wrap")]
-use crate::wrap;
-#[cfg(feature = "wrap")]
-use crate::highlight::extract_segment_spans;
-#[cfg(feature = "wrap")]
-use textwrap::Options;
 #[cfg(feature = "ratatui")]
 use ratatui::text::Line;
 use std::cmp;
@@ -170,13 +164,8 @@ impl<'a> TextArea<'a> {
         let show_line_numbers = line_number_style.is_some();
 
         #[cfg(feature = "wrap")]
-        let wrap_enabled = self.wrap_enabled();
-        #[cfg(not(feature = "wrap"))]
-        // let wrap_enabled = false;
-
-        #[cfg(feature = "wrap")]
-        if wrap_enabled {
-            return wrap::render_wrapped_lines(self, top_row, height, area_width, lnum_len, show_line_numbers, line_number_style);
+        if self.wrap_enabled() {
+            return self.render_wrapped_lines(top_row, height, area_width, lnum_len, show_line_numbers, line_number_style);
         }
 
         self.render_unwrapped_lines(top_row, height, area_width, lnum_len, show_line_numbers)

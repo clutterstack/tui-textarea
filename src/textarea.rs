@@ -21,10 +21,6 @@ use tui::text::Spans as Line;
 use unicode_width::UnicodeWidthChar as _;
 
 // Include module implementations that extend TextArea with additional methods
-#[cfg(feature = "mouse")]
-mod mouse;
-#[cfg(feature = "wrap")]
-mod wrap;
 
 #[derive(Debug, Clone)]
 enum YankText {
@@ -116,7 +112,7 @@ pub struct TextArea<'a> {
     block: Option<Block<'a>>,
     style: Style,
     cursor: (usize, usize), // 0-base
-    tab_len: u8,
+    pub(crate) tab_len: u8,
     hard_tab_indent: bool,
     history: History,
     cursor_line_style: Style,
@@ -130,12 +126,12 @@ pub struct TextArea<'a> {
     pub(crate) placeholder: String,
     pub(crate) placeholder_style: Style,
     mask: Option<char>,
-    selection_start: Option<(usize, usize)>,
+    pub(crate) selection_start: Option<(usize, usize)>,
     select_style: Style,
     #[cfg(feature = "wrap")]
-    wrap_enabled: bool,
+    pub(crate) wrap_enabled: bool,
     #[cfg(feature = "wrap")]
-    wrap_width: Option<usize>,
+    pub(crate) wrap_width: Option<usize>,
 }
 
 /// Convert any iterator whose elements can be converted into [`String`] into [`TextArea`]. Each [`String`] element is
@@ -2234,7 +2230,8 @@ impl<'a> TextArea<'a> {
     // ===== Helper functions for coordinate mapping =====
 
     /// Calculate the visual width needed for line numbers including padding
-    fn calculate_line_number_width(&self) -> u16 {
+    #[cfg(feature = "mouse")]
+    pub(crate) fn calculate_line_number_width(&self) -> u16 {
         if self.line_number_style().is_some() {
             crate::util::num_digits(self.lines().len()) as u16 + 2
         } else {
@@ -2243,49 +2240,49 @@ impl<'a> TextArea<'a> {
     }
 
     /// Calculate the visual width of a single character, handling tabs and Unicode
-    fn calculate_char_visual_width(&self, ch: char, current_visual_pos: u16) -> u16 {
-        if ch == '\t' {
-            self.tab_len as u16 - (current_visual_pos % self.tab_len as u16)
-        } else {
-            unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) as u16
-        }
-    }
+    // fn calculate_char_visual_width(&self, ch: char, current_visual_pos: u16) -> u16 {
+    //     if ch == '\t' {
+    //         self.tab_len as u16 - (current_visual_pos % self.tab_len as u16)
+    //     } else {
+    //         unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) as u16
+    //     }
+    // }
 
 
     /// Convert logical column position to visual column position within a line
     /// accounting for tab expansion and Unicode width
-    fn logical_to_visual_column(&self, line: &str, logical_col: usize) -> u16 {
-        let mut visual_pos = 0;
+    // fn logical_to_visual_column(&self, line: &str, logical_col: usize) -> u16 {
+    //     let mut visual_pos = 0;
         
-        for (char_idx, ch) in line.char_indices() {
-            if line[..char_idx].chars().count() >= logical_col {
-                break;
-            }
-            visual_pos += self.calculate_char_visual_width(ch, visual_pos);
-        }
+    //     for (char_idx, ch) in line.char_indices() {
+    //         if line[..char_idx].chars().count() >= logical_col {
+    //             break;
+    //         }
+    //         visual_pos += self.calculate_char_visual_width(ch, visual_pos);
+    //     }
         
-        visual_pos
-    }
+    //     visual_pos
+    // }
 
-    /// Convert visual column position to logical column position within a line
-    /// accounting for tab expansion and Unicode width
-    fn visual_to_logical_column(&self, line: &str, target_visual_col: u16) -> usize {
-        let mut logical_pos = 0;
-        let mut visual_pos = 0;
+    // /// Convert visual column position to logical column position within a line
+    // /// accounting for tab expansion and Unicode width
+    // fn visual_to_logical_column(&self, line: &str, target_visual_col: u16) -> usize {
+    //     let mut logical_pos = 0;
+    //     let mut visual_pos = 0;
         
-        for ch in line.chars() {
-            let char_width = self.calculate_char_visual_width(ch, visual_pos);
+    //     for ch in line.chars() {
+    //         let char_width = self.calculate_char_visual_width(ch, visual_pos);
             
-            if visual_pos + char_width > target_visual_col {
-                break;
-            }
+    //         if visual_pos + char_width > target_visual_col {
+    //             break;
+    //         }
             
-            visual_pos += char_width;
-            logical_pos += 1;
-        }
+    //         visual_pos += char_width;
+    //         logical_pos += 1;
+    //     }
         
-        logical_pos
-    }
+    //     logical_pos
+    // }
 
 
 

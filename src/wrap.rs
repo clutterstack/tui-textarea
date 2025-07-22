@@ -2,11 +2,14 @@
 
 use crate::textarea::TextArea;
 use crate::ratatui::text::{Line, Span};
+use crate::ratatui::style::Style;
+use textwrap::Options;
+use crate::highlight::extract_segment_spans;
 
 /// Text wrapping functionality for TextArea
 impl<'a> TextArea<'a> {
     // Render content wrapped with `textwrap` 
-    fn render_wrapped_lines(
+    pub(crate) fn render_wrapped_lines(
         &'a self,
         top_row: usize,
         height: usize,
@@ -91,9 +94,9 @@ impl<'a> TextArea<'a> {
                 if display_row >= top_row + height {
                     break;
                 }
-
+            }
+            
             lines
-        }
     }
 
     /// Enable or disable text wrapping.

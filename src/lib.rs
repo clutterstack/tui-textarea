@@ -20,6 +20,8 @@ mod widget;
 mod word;
 #[cfg(feature = "wrap")]
 mod wrap;
+#[cfg(feature = "mouse")]
+mod mouse;
 
 #[cfg(feature = "ratatui")]
 #[allow(clippy::single_component_path_imports)]
